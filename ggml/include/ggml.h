@@ -436,6 +436,9 @@ extern "C" {
         // Prism-private type: a high id so it stays clear of upstream's ids (44..142 unused;
         // 142 is Prism's PQ2_0, which this tree does not carry).
         GGML_TYPE_PTQ1_0 = 143, // Prism-private ternary, group 128
+        // Trellis-coded types of agentionai/llama.cpp (same ids there and in halo-box/strix-llama.cpp).
+        // TQ2_T: 2.125 bpw (QTIP-style bitshift trellis, L=16 K=8 V=4, hashed 2-D "Hyb" codebook), group 128.
+        GGML_TYPE_TQ2_T   = 144,
         // Avalon's IQ3_K / IQ3_KS (ids 43 / 44 there, which clash with upstream's F8_E4M3 here)
         GGML_TYPE_IQ3_K   = 150, // ik_llama.cpp's IQ3_K (type 138 there): same block and grid
         GGML_TYPE_IQ3_KS  = 151, // ik_llama.cpp's IQ3_KS codebook and layout, a block scale instead of its row scale (104 B / 256)
@@ -497,6 +500,7 @@ extern "C" {
         GGML_FTYPE_MOSTLY_Q2_0    = 28, // except 1d tensors
         GGML_FTYPE_MOSTLY_F8_E4M3 = 29, // except 1d tensors
         GGML_FTYPE_MOSTLY_PTQ1_0 = 129, // except 1d tensors (Prism-private group-128 ternary)
+        GGML_FTYPE_MOSTLY_TQ2_T  = 130, // except 1d tensors (trellis-coded, group 128)
     };
 
     // available tensor operations:
