@@ -439,6 +439,10 @@ extern "C" {
         // Trellis-coded types of agentionai/llama.cpp (same ids there and in halo-box/strix-llama.cpp).
         // TQ2_T: 2.125 bpw (QTIP-style bitshift trellis, L=16 K=8 V=4, hashed 2-D "Hyb" codebook), group 128.
         GGML_TYPE_TQ2_T   = 144,
+        // TQK6 / TQK7: bit-packed trellis siblings of TQ2_T (K = 6 / 7 new bits per 4-weight step,
+        // same codebook): 1.625 / 1.875 bpw, group 128.
+        GGML_TYPE_TQK6    = 145,
+        GGML_TYPE_TQK7    = 146,
         // Avalon's IQ3_K / IQ3_KS (ids 43 / 44 there, which clash with upstream's F8_E4M3 here)
         GGML_TYPE_IQ3_K   = 150, // ik_llama.cpp's IQ3_K (type 138 there): same block and grid
         GGML_TYPE_IQ3_KS  = 151, // ik_llama.cpp's IQ3_KS codebook and layout, a block scale instead of its row scale (104 B / 256)
@@ -501,6 +505,8 @@ extern "C" {
         GGML_FTYPE_MOSTLY_F8_E4M3 = 29, // except 1d tensors
         GGML_FTYPE_MOSTLY_PTQ1_0 = 129, // except 1d tensors (Prism-private group-128 ternary)
         GGML_FTYPE_MOSTLY_TQ2_T  = 130, // except 1d tensors (trellis-coded, group 128)
+        GGML_FTYPE_MOSTLY_TQK6   = 131, // except 1d tensors (trellis-coded K=6, group 128)
+        GGML_FTYPE_MOSTLY_TQK7   = 132, // except 1d tensors (trellis-coded K=7, group 128)
     };
 
     // available tensor operations:

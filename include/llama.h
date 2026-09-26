@@ -161,6 +161,8 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_F8_E4M3       = 42, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_PTQ1_0    = 143, // except 1d tensors (Prism group-128 ternary, 1.75 bpw)
         LLAMA_FTYPE_MOSTLY_TQ2_T     = 144, // except 1d tensors (trellis-coded, group 128, 2.125 bpw; agentionai id)
+        LLAMA_FTYPE_MOSTLY_TQK6      = 145, // except 1d tensors (trellis-coded K=6, group 128, 1.625 bpw)
+        LLAMA_FTYPE_MOSTLY_TQK7      = 146, // except 1d tensors (trellis-coded K=7, group 128, 1.875 bpw)
         LLAMA_FTYPE_MOSTLY_IQ3_K     = 150, // except 1d tensors (ik_llama.cpp / Avalon IQ3_K, 3.44 bpw)
         LLAMA_FTYPE_MOSTLY_IQ3_KS    = 151, // except 1d tensors (Avalon IQ3_KS, 3.25 bpw)
 
