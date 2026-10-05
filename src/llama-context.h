@@ -357,6 +357,9 @@ private:
     llama_memory_ptr memory;
     llama_moe_cache_ptr moe_cache;
 
+    // [TAG_KV_ZERO_FREED] registered with the memory (and with mem_other) so that host-side cache writes wait for our graphs
+    std::shared_ptr<std::function<void()>> memory_sync;
+
     // decode output (2-dimensional array: [n_outputs][n_vocab])
     buffer_view<float> logits = {nullptr, 0};
 
