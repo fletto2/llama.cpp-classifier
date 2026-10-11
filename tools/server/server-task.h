@@ -219,7 +219,8 @@ struct server_task {
     std::vector<llama_tokens> tokens_classify_batch; // SERVER_TASK_TYPE_CLASSIFY / FEATURES with several inputs; OPTIONS: prompt + each option
     std::vector<std::string>  option_names;          // SERVER_TASK_TYPE_OPTIONS
     json                      questions;             // SERVER_TASK_TYPE_CLASSIFY: questions given in the request (no head)
-    std::vector<std::string>  terms;                 // SERVER_TASK_TYPE_CLASSIFY: per input, the term span heads pool over
+    std::vector<std::string>  terms;                 // SERVER_TASK_TYPE_CLASSIFY: per input, the term span heads pool over; FEATURES_RAW: [term]
+    int32_t                   span_window = 2;       // SERVER_TASK_TYPE_FEATURES_RAW: span pooling window
     json         lora_train;
 
     // used by SERVER_TASK_TYPE_FEATURES*: layers (1..n_layer; FEATURES_RAW: empty = the automatic

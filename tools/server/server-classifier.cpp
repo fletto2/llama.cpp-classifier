@@ -143,9 +143,9 @@ void server_classifier::check_tokens(const llama_tokens & tokens) const {
     }
 }
 
-void server_classifier::decode(server_classifier_ctx & c, const llama_tokens & tokens) {
+void server_classifier::decode(server_classifier_ctx & c, const llama_tokens & tokens, bool keep_rows) {
     c.cap.reset();
-    c.cap.keep_rows = std::any_of(heads.begin(), heads.end(), [](const common_classifier_head & h) {
+    c.cap.keep_rows = keep_rows || std::any_of(heads.begin(), heads.end(), [](const common_classifier_head & h) {
         return h.pooling == COMMON_CLASSIFIER_POOL_SPAN; });
     llama_memory_clear(llama_get_memory(c.ctx), true);
     llama_tokens ids = tokens;
@@ -312,7 +312,8 @@ std::vector<json> server_classifier::classify_batch(const std::vector<llama_toke
 }
 
 std::vector<float> server_classifier::features_raw(const llama_tokens & tokens, const std::vector<int32_t> & layers,
-                                                  const std::vector<common_classifier_pooling> & poolings) {
+                                                  const std::vector<common_classifier_pooling> & poolings,
+                                                  const std::string & term, int32_t span_window) {
     if (!feat) {
         throw std::invalid_argument("features are disabled, start the server with --features");
     }
@@ -328,13 +329,21 @@ std::vector<float> server_classifier::features_raw(const llama_tokens & tokens, 
     feat->cap.set_layers(n_embd, layers);
     // compute only as deep as the deepest requested layer (the memory is cleared for every input anyway)
     llama_set_n_layer_exit(feat->ctx, *std::max_element(layers.begin(), layers.end()));
-    decode(*feat, tokens);
+    const bool span = std::find(poolings.begin(), poolings.end(), COMMON_CLASSIFIER_POOL_SPAN) != poolings.end();
+    decode(*feat, tokens, span);
+    std::vector<int32_t> pos;
+    if (span && !term.empty()) {
+        pos = common_classifier_term_positions(llama_model_get_vocab(model), tokens, term, span_window);
+    }
     std::vector<float> out;
     out.reserve(layers.size() * poolings.size() * n_embd);
     std::vector<float> x;
     for (int32_t L : layers) {
         for (auto pool : poolings) {
-            feat->cap.get(L, pool, x);
+            // span without a term found: mean1 (the capture's fallback for span)
+            if (!(pool == COMMON_CLASSIFIER_POOL_SPAN && !pos.empty() && feat->cap.get_positions(L, 0, pos, x))) {
+                feat->cap.get(L, pool, x);
+            }
             out.insert(out.end(), x.begin(), x.end());
         }
     }

@@ -391,6 +391,24 @@ def toy_data(n_per_class: int = 12):
     return data
 
 
+def test_classify_train_span(meta, tmp_path):
+    # live training with a term per item and span pooling; /classify then reads the term's tokens
+    server.extra_args = ["--classifier-train"]
+    server.start()
+    pos = ["the cat was the hero of the story", "everyone talked about the cat all day", "the cat saved the town"]
+    neg = ["they passed a cat on the way home", "a girl read, a cat sat nearby", "a boy walked past a cat and kept going"]
+    data = [{"input": (pos if i % 2 == 0 else neg)[i % 3] + f" {i}", "label": i % 2 == 0, "term": "cat"} for i in range(24)]
+    res = server.make_request("POST", "/classify/train", data={"question_id": "pivotal", "type": "noul", "data": data,
+                                                               "layers": [3], "pooling": "span", "span_window": 1, "folds": 2})
+    assert res.status_code == 200, res.body
+    assert res.body["pooling"] == "span" and res.body["span_window"] == 1
+    a = server.make_request("POST", "/classify", data={"input": "the cat saved the town", "term": "cat"}).body["answers"]
+    assert a["pivotal"]["span_tokens"] > 0
+    # "auto" tries span when the data has terms
+    res = server.make_request("POST", "/classify/train", data={"question_id": "p2", "type": "noul", "data": data, "layers": [3], "folds": 2})
+    assert res.status_code == 200 and any(" span " in g for g in res.body["grid"])
+
+
 def test_classify_train_choice_and_score(meta, tmp_path):
     server.extra_args = ["--classifier-train", "--classifier-dir", str(tmp_path)]
     server.start()

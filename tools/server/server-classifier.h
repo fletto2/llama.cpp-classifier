@@ -71,7 +71,8 @@ struct server_classifier {
 
     // the same as float arrays: layers x poolings x n_embd
     std::vector<float> features_raw(const llama_tokens & tokens, const std::vector<int32_t> & layers,
-                                    const std::vector<common_classifier_pooling> & poolings);
+                                    const std::vector<common_classifier_pooling> & poolings,
+                                    const std::string & term = "", int32_t span_window = 2);
 
     // register a head (replaces a head with the same question_id); creates its layer's context if needed
     void add_head(const common_classifier_head & head);
@@ -84,7 +85,7 @@ struct server_classifier {
 
 private:
     void check_tokens(const llama_tokens & tokens) const;
-    void decode(server_classifier_ctx & c, const llama_tokens & tokens);
+    void decode(server_classifier_ctx & c, const llama_tokens & tokens, bool keep_rows = false);
     void decode_batch(server_classifier_ctx & c, const std::vector<llama_tokens> & items, int64_t n_total);
 
     llama_model * model    = nullptr;

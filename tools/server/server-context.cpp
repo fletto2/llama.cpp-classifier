@@ -3289,11 +3289,12 @@ private:
                             }
                             poolings.push_back(pool);
                         }
+                        const std::string term = task.terms.empty() ? std::string() : task.terms[0];
                         auto res = std::make_unique<server_task_result_features>();
                         res->id     = task.id;
                         res->index  = task.index;
                         res->layers = task.feature_layers.empty() ? common_classifier_auto_layers(classifier->n_layer()) : task.feature_layers;
-                        res->data   = classifier->features_raw(task.tokens_classify, res->layers, poolings);
+                        res->data   = classifier->features_raw(task.tokens_classify, res->layers, poolings, term, task.span_window);
                         queue_results.send(std::move(res));
                     } catch (const std::invalid_argument & e) {
                         send_error(task.id, e.what(), ERROR_TYPE_INVALID_REQUEST);
@@ -6442,6 +6443,7 @@ void server_routes::init_routes() {
 
         std::vector<llama_tokens> items;
         std::vector<std::string>  labels;
+        std::vector<std::string>  terms;   // span pooling: the term of each item ("term", optional)
         int64_t n_truncated = 0;
         for (const auto & d : body.at("data")) {
             if (!d.is_object() || !d.contains("input") || !d.contains("label")) {
@@ -6465,6 +6467,7 @@ void server_routes::init_routes() {
                 n_truncated++;
             }
             items.push_back(std::move(t));
+            terms.push_back(d.contains("term") && d.at("term").is_string() ? d.at("term").get<std::string>() : std::string());
             const json & l = d.at("label");
             labels.push_back(l.is_string() ? l.get<std::string>() : l.dump());
         }
@@ -6491,8 +6494,11 @@ void server_routes::init_routes() {
         if (pooling == "auto" || pooling == "mean") pool_names.push_back("mean");
         if (pooling == "auto" || pooling == "last") pool_names.push_back("last");
         if (pooling == "auto" || pooling == "mean1") pool_names.push_back("mean1");
+        const bool any_term = std::any_of(terms.begin(), terms.end(), [](const std::string & t) { return !t.empty(); });
+        if ((pooling == "auto" && any_term) || pooling == "span") pool_names.push_back("span");
+        const int32_t span_window = body.value("span_window", 2);
         if (pool_names.empty()) {
-            return bad("\"pooling\" must be auto, mean, last or mean1");
+            return bad("\"pooling\" must be auto, mean, last, mean1 or span");
         }
         std::vector<common_classifier_pooling> pools;
         for (const auto & name : pool_names) {
@@ -6550,6 +6556,8 @@ void server_routes::init_routes() {
                 task.tokens_classify  = std::move(items[i]);
                 task.feature_layers   = layers;
                 task.feature_poolings = pool_names;
+                task.terms            = {terms[i]};
+                task.span_window      = span_window;
                 tasks.push_back(std::move(task));
             }
             rd.post_tasks(std::move(tasks));
@@ -6587,6 +6595,7 @@ void server_routes::init_routes() {
             return bad(err);
         }
         head.pooling = tr.pooling;
+        head.span_window = span_window;
         head.layer   = tr.layer;
         head.n_embd  = d;
         head.weight  = tr.weight;
@@ -6649,6 +6658,7 @@ void server_routes::init_routes() {
             {"options",     head.options},
             {"layer",       head.layer},
             {"pooling",     common_classifier_pooling_name(head.pooling)},
+            {"span_window", head.span_window},
             {"C",           tr.C},
             {"cv",          cv},
             {"n_items",     n},
