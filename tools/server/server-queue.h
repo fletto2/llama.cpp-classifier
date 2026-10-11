@@ -58,6 +58,10 @@ public:
     // Add a new task, but defer until one slot is available
     void defer(server_task && task);
 
+    // remove and return the queued tasks (not the deferred ones) for which pred is true, in queue order, at most max_n;
+    // pred is called once per candidate and may keep state (e.g. a token budget)
+    std::vector<server_task> take_if(const std::function<bool(const server_task &)> & pred, size_t max_n);
+
     // Get the next id for creating a new task
     int get_new_id();
 

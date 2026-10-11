@@ -239,6 +239,36 @@ def test_classify_span_pooling(meta, tmp_path):
     assert server.make_request("POST", "/classify", data={"input": texts, "term": ["a"]}).status_code == 400
 
 
+def test_classify_concurrent_requests(meta, tmp_path):
+    # single-input requests from different callers at the same time are decoded together; every caller must get
+    # the answer for its own input
+    import threading
+    rng = np.random.default_rng(4)
+    head = write_head(str(tmp_path / "m.gguf"), meta["n_embd"], 3, rng.standard_normal(meta["n_embd"]) * 0.1, 0.0, "m")
+    server.extra_args = ["--classifier", head]
+    server.n_slots = 4
+    server.start()
+    inputs = [[int(t) for t in rng.integers(1, meta["n_vocab"], size=int(n))] for n in rng.integers(2, 20, size=16)]
+    alone = [server.make_request("POST", "/classify", data={"input": x}).body["answers"]["m"]["noul"] for x in inputs]
+    got = [None] * len(inputs)
+    def call(i):
+        got[i] = server.make_request("POST", "/classify", data={"input": inputs[i]}).body["answers"]["m"]["noul"]
+    th = [threading.Thread(target=call, args=(i,)) for i in range(len(inputs))]
+    for t in th: t.start()
+    for t in th: t.join()
+    for a, g in zip(alone, got):
+        assert g == pytest.approx(a, abs=5e-3)
+    # a batched request and single ones at the same time
+    got2 = {}
+    def call_batch():
+        got2["b"] = server.make_request("POST", "/classify", data={"input": inputs[:5]}).body
+    th = [threading.Thread(target=call_batch)] + [threading.Thread(target=call, args=(i,)) for i in range(5, 10)]
+    for t in th: t.start()
+    for t in th: t.join()
+    assert [r["answers"]["m"]["noul"] for r in got2["b"]] == pytest.approx(alone[:5], abs=5e-3)
+    assert got[5:10] == pytest.approx(alone[5:10], abs=5e-3)
+
+
 def test_classify_input_errors(meta, tmp_path):
     head = write_head(str(tmp_path / "zero.gguf"), meta["n_embd"], 2, np.zeros(meta["n_embd"]), 0.0)
     server.extra_args = ["--classifier", head, "--classifier-ctx", "32"]

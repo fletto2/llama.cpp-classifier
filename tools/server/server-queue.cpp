@@ -25,6 +25,20 @@ static bool task_resets_idle_timer(server_task_type type) {
     return type != SERVER_TASK_TYPE_METRICS;
 }
 
+std::vector<server_task> server_queue::take_if(const std::function<bool(const server_task &)> & pred, size_t max_n) {
+    std::unique_lock<std::mutex> lock(mutex_tasks);
+    std::vector<server_task> out;
+    for (auto it = queue_tasks.begin(); it != queue_tasks.end() && out.size() < max_n; ) {
+        if (pred(*it)) {
+            out.push_back(std::move(*it));
+            it = queue_tasks.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    return out;
+}
+
 int server_queue::post(server_task && task, bool front) {
     std::unique_lock<std::mutex> lock(mutex_tasks);
     GGML_ASSERT(task.id != -1);

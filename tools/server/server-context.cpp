@@ -3120,6 +3120,89 @@ private:
                                             "or send \"questions\" (with --features)", ERROR_TYPE_NOT_SUPPORTED);
                         break;
                     }
+                    // the answer of one task, in its request's shape (an array for several inputs, else one object)
+                    auto send_answers = [&](const server_task & t, const std::vector<json> & answers) {
+                        auto r = std::make_unique<server_task_result_json>();
+                        r->id    = t.id;
+                        r->index = t.index;
+                        if (!t.tokens_classify_batch.empty()) {
+                            r->data = json::array();
+                            for (size_t k = 0; k < answers.size(); k++) {
+                                r->data.push_back(json {
+                                    {"model",   model_name},
+                                    {"answers", answers[k]},
+                                    {"usage",   {{"input_tokens", t.tokens_classify_batch[k].size()}, {"output_tokens", 0}}},
+                                });
+                            }
+                        } else {
+                            r->data = json {
+                                {"model",   model_name},
+                                {"answers", answers.at(0)},
+                                {"usage",   {{"input_tokens", t.tokens_classify.size()}, {"output_tokens", 0}}},
+                            };
+                        }
+                        queue_results.send(std::move(r));
+                    };
+                    if (!has_q && classifier->enabled()) {
+                        // heads only: decode this task together with the other head-only classify tasks waiting in the
+                        // queue (requests from different callers), as one batch within the classifier context
+                        auto inputs_of = [](const server_task & t) {
+                            return t.tokens_classify_batch.empty() ? std::vector<llama_tokens>{t.tokens_classify} : t.tokens_classify_batch;
+                        };
+                        auto terms_of = [&](const server_task & t) {
+                            const size_t n = t.tokens_classify_batch.empty() ? 1 : t.tokens_classify_batch.size();
+                            std::vector<std::string> v = t.terms;
+                            v.resize(n);
+                            return v;
+                        };
+                        std::vector<llama_tokens> all = inputs_of(task);
+                        std::vector<std::string>  all_terms = terms_of(task);
+                        int64_t n_tok = 0;
+                        for (const auto & t : all) n_tok += (int64_t) t.size();
+                        size_t  n_in  = all.size();
+                        std::vector<server_task> more = queue_tasks.take_if([&](const server_task & t) {
+                            if (t.type != SERVER_TASK_TYPE_CLASSIFY || (t.questions.is_object() && t.questions.contains("questions"))) {
+                                return false;
+                            }
+                            int64_t n = 0;
+                            for (const auto & x : inputs_of(t)) n += (int64_t) x.size();
+                            const size_t k = t.tokens_classify_batch.empty() ? 1 : t.tokens_classify_batch.size();
+                            if (n_tok + n > params_base.classifier_n_ctx || n_in + k > SERVER_CLASSIFIER_MAX_SEQ) {
+                                return false;
+                            }
+                            n_tok += n;
+                            n_in  += k;
+                            return true;
+                        }, SERVER_CLASSIFIER_MAX_SEQ);
+                        for (const auto & t : more) {
+                            const auto in = inputs_of(t);
+                            const auto tr = terms_of(t);
+                            all.insert(all.end(), in.begin(), in.end());
+                            all_terms.insert(all_terms.end(), tr.begin(), tr.end());
+                        }
+                        std::vector<json> answers;
+                        try {
+                            answers = all.size() == 1 ? std::vector<json>{classifier->classify(all[0], all_terms[0])}
+                                                      : classifier->classify_batch(all, all_terms);
+                        } catch (const std::invalid_argument & e) {
+                            send_error(task.id, e.what(), ERROR_TYPE_INVALID_REQUEST);
+                            for (const auto & t : more) send_error(t.id, e.what(), ERROR_TYPE_INVALID_REQUEST);
+                            break;
+                        } catch (const std::exception & e) {
+                            send_error(task.id, e.what(), ERROR_TYPE_SERVER);
+                            for (const auto & t : more) send_error(t.id, e.what(), ERROR_TYPE_SERVER);
+                            break;
+                        }
+                        size_t off = 0;
+                        auto give = [&](const server_task & t) {
+                            const size_t k = t.tokens_classify_batch.empty() ? 1 : t.tokens_classify_batch.size();
+                            send_answers(t, std::vector<json>(answers.begin() + off, answers.begin() + off + k));
+                            off += k;
+                        };
+                        give(task);
+                        for (const auto & t : more) give(t);
+                        break;
+                    }
                     try {
                         auto res = std::make_unique<server_task_result_json>();
                         res->id    = task.id;
