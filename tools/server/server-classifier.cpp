@@ -412,6 +412,80 @@ std::vector<json> server_classifier::features_batch(const std::vector<llama_toke
     return out;
 }
 
+std::vector<json> server_classifier::classify_questions(const std::vector<llama_tokens> & items, const std::vector<question> & questions,
+                                                      int32_t layer, common_classifier_pooling pooling, double temperature) {
+    if (!feat) {
+        throw std::invalid_argument("questions in the request need the features context, start the server with --features");
+    }
+    if (layer < 1 || layer > n_layer_) {
+        throw std::invalid_argument("questions: layer " + std::to_string(layer) + " is outside 1.." + std::to_string(n_layer_));
+    }
+    if (!(temperature > 0)) {
+        throw std::invalid_argument("questions: the temperature must be positive");
+    }
+    const std::vector<int32_t> layers = {layer};
+    const std::vector<common_classifier_pooling> pools = {pooling};
+    // the inputs' pooled vectors
+    std::vector<json> fx = features_batch(items, layers, pools);
+    const std::string pname = common_classifier_pooling_name(pooling);
+    // the descriptions' pooled vectors, cached by layer, pooling and tokens
+    auto describe = [&](const llama_tokens & t) -> const std::vector<float> & {
+        std::string key = std::to_string(layer) + "|" + pname + "|";
+        for (llama_token x : t) key += std::to_string(x) + ",";
+        auto it = desc_cache.find(key);
+        if (it == desc_cache.end()) {
+            const std::vector<float> v = features_raw(t, layers, pools);
+            if (desc_cache.size() > 4096) desc_cache.clear();
+            it = desc_cache.emplace(key, v).first;
+        }
+        return it->second;
+    };
+    std::vector<json> out(items.size(), json::object());
+    for (const auto & q : questions) {
+        const size_t K = q.descriptions.size();
+        std::vector<std::vector<double>> P(K, std::vector<double>(n_embd));
+        std::vector<double> c(n_embd, 0.0);
+        for (size_t k = 0; k < K; k++) {
+            const auto & v = describe(q.descriptions[k]);
+            for (int32_t j = 0; j < n_embd; j++) { P[k][j] = v[j]; c[j] += v[j] / (double) K; }
+        }
+        for (auto & p : P) for (int32_t j = 0; j < n_embd; j++) p[j] -= c[j];
+        for (size_t i = 0; i < items.size(); i++) {
+            const std::vector<float> x = fx[i][std::to_string(layer)][pname].get<std::vector<float>>();
+            std::vector<double> xc(n_embd);
+            double xn = 0.0;
+            for (int32_t j = 0; j < n_embd; j++) { xc[j] = x[j] - c[j]; xn += xc[j] * xc[j]; }
+            xn = std::sqrt(xn) + 1e-12;
+            std::vector<double> cs(K);
+            for (size_t k = 0; k < K; k++) {
+                double d = 0.0, pn = 0.0;
+                for (int32_t j = 0; j < n_embd; j++) { d += xc[j] * P[k][j]; pn += P[k][j] * P[k][j]; }
+                cs[k] = d / (xn * (std::sqrt(pn) + 1e-12));
+            }
+            const double mx = *std::max_element(cs.begin(), cs.end());
+            double z = 0.0;
+            for (double v : cs) z += std::exp((v - mx) / temperature);
+            json sims = json::object(), probs = json::object();
+            size_t best = 0;
+            for (size_t k = 0; k < K; k++) {
+                sims[q.names[k]]  = cs[k];
+                probs[q.names[k]] = std::exp((cs[k] - mx) / temperature) / z;
+                if (cs[k] > cs[best]) best = k;
+            }
+            json a;
+            if (q.type == "noul") {
+                a = {{"type", "noul"}, {"noul", probs["true"]}, {"similarity", sims}};
+            } else {
+                a = {{"type", "choice"}, {"choice", q.names[best]}, {"confidence", probs[q.names[best]]},
+                     {"probabilities", probs}, {"similarity", sims}};
+            }
+            a["method"] = "similarity";
+            out[i][q.id] = a;
+        }
+    }
+    return out;
+}
+
 // log-softmax of one row of logits at the token t
 static double token_logprob(const float * logits, int32_t n_vocab, llama_token t) {
     float mx = logits[0];

@@ -173,6 +173,34 @@ def test_options_disabled():
     assert server.make_request("POST", "/options", data={"prompt": "x", "options": ["a", "b"]}).status_code != 200
 
 
+def test_classify_questions(meta):
+    # questions in the request, answered by similarity to the answers' descriptions; no head needed
+    server.extra_args = ["--features"]
+    server.start()
+    q = {"mood": {"type": "noul", "true": "a happy story about friends", "false": "a sad story about loss"},
+         "topic": {"type": "choice", "options": {"animals": "a cat and a dog", "food": "bread and cake", "sea": "boats on the sea"}}}
+    texts = ["The little cat played with the dog in the park.", "She baked bread for her friends.", "The boat sailed away."]
+    batch = server.make_request("POST", "/classify", data={"input": texts, "questions": q, "layer": 3})
+    assert batch.status_code == 200 and len(batch.body) == 3
+    for r, t in zip(batch.body, texts):
+        a = r["answers"]
+        assert 0.0 <= a["mood"]["noul"] <= 1.0 and a["mood"]["method"] == "similarity"
+        # two descriptions, centred on their mean: the similarities are opposite
+        assert a["mood"]["similarity"]["true"] == pytest.approx(-a["mood"]["similarity"]["false"], abs=1e-9)
+        assert sum(a["topic"]["probabilities"].values()) == pytest.approx(1.0, abs=1e-6)
+        assert a["topic"]["choice"] in ("animals", "food", "sea")
+        one = server.make_request("POST", "/classify", data={"input": t, "questions": q, "layer": 3}).body["answers"]
+        assert one["mood"]["noul"] == pytest.approx(a["mood"]["noul"], abs=5e-3)
+    bad = server.make_request("POST", "/classify", data={"input": "x", "questions": {"m": {"type": "noul", "true": "a"}}})
+    assert bad.status_code == 400
+
+
+def test_classify_questions_need_features():
+    server.start()
+    res = server.make_request("POST", "/classify", data={"input": "x", "questions": {"m": {"type": "noul", "true": "a", "false": "b"}}})
+    assert res.status_code != 200
+
+
 def test_classify_input_errors(meta, tmp_path):
     head = write_head(str(tmp_path / "zero.gguf"), meta["n_embd"], 2, np.zeros(meta["n_embd"]), 0.0)
     server.extra_args = ["--classifier", head, "--classifier-ctx", "32"]

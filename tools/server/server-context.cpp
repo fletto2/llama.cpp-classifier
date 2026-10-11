@@ -3114,17 +3114,65 @@ private:
                 } break;
             case SERVER_TASK_TYPE_CLASSIFY:
                 {
-                    if (!classifier || !classifier->enabled()) {
-                        send_error(task.id, "no classifier heads are loaded, start the server with --classifier", ERROR_TYPE_NOT_SUPPORTED);
+                    const bool has_q = task.questions.is_object() && task.questions.contains("questions");
+                    if (!classifier || (!classifier->enabled() && !has_q)) {
+                        send_error(task.id, "no classifier heads are loaded and no questions were given; start the server with --classifier, "
+                                            "or send \"questions\" (with --features)", ERROR_TYPE_NOT_SUPPORTED);
                         break;
                     }
                     try {
                         auto res = std::make_unique<server_task_result_json>();
                         res->id    = task.id;
                         res->index = task.index;
+                        const std::vector<llama_tokens> items = task.tokens_classify_batch.empty() ?
+                            std::vector<llama_tokens>{task.tokens_classify} : task.tokens_classify_batch;
+                        std::vector<json> qa;
+                        if (has_q) {
+                            // questions in the request: answered by similarity to the answers' descriptions
+                            std::vector<server_classifier::question> qs;
+                            for (const auto & [qid, q] : task.questions.at("questions").items()) {
+                                server_classifier::question one;
+                                one.id   = qid;
+                                one.type = q.value("type", std::string(q.contains("options") ? "choice" : "noul"));
+                                if (one.type == "noul") {
+                                    if (!q.contains("true") || !q.contains("false")) {
+                                        throw std::invalid_argument("question '" + qid + "': a noul question needs \"true\" and \"false\" descriptions");
+                                    }
+                                    one.names = {"true", "false"};
+                                    one.descriptions.push_back(common_tokenize(vocab, q.at("true").get<std::string>(), true, true));
+                                    one.descriptions.push_back(common_tokenize(vocab, q.at("false").get<std::string>(), true, true));
+                                } else if (one.type == "choice") {
+                                    if (!q.contains("options") || !q.at("options").is_object() || q.at("options").size() < 2) {
+                                        throw std::invalid_argument("question '" + qid + "': a choice question needs \"options\": {name: description, ...} with 2 or more");
+                                    }
+                                    for (const auto & [name, desc] : q.at("options").items()) {
+                                        one.names.push_back(name);
+                                        one.descriptions.push_back(common_tokenize(vocab, desc.get<std::string>(), true, true));
+                                    }
+                                } else {
+                                    throw std::invalid_argument("question '" + qid + "': type must be noul or choice");
+                                }
+                                qs.push_back(std::move(one));
+                            }
+                            common_classifier_pooling pool = COMMON_CLASSIFIER_POOL_MEAN1;
+                            const std::string pname = task.questions.value("pooling", std::string("mean1"));
+                            if (!common_classifier_pooling_from_name(pname, pool)) {
+                                throw std::invalid_argument("unknown pooling '" + pname + "' (mean, mean1, last)");
+                            }
+                            const int32_t layer = task.questions.value("layer", (2 * classifier->n_layer() + 2) / 3);
+                            qa = classifier->classify_questions(items, qs, layer, pool, task.questions.value("temperature", 0.05));
+                        }
+                        std::vector<json> ha(items.size(), json::object());
+                        if (classifier->enabled() && !task.questions.value("questions_only", false)) {
+                            ha = task.tokens_classify_batch.empty() ? std::vector<json>{classifier->classify(task.tokens_classify)}
+                                                                    : classifier->classify_batch(task.tokens_classify_batch);
+                        }
+                        for (size_t k = 0; k < qa.size(); k++) {
+                            for (const auto & [qid, a] : qa[k].items()) ha[k][qid] = a;
+                        }
                         if (!task.tokens_classify_batch.empty()) {
                             // several inputs: an array of results, flattened by the handler
-                            const auto answers = classifier->classify_batch(task.tokens_classify_batch);
+                            const auto & answers = ha;
                             res->data = json::array();
                             for (size_t k = 0; k < answers.size(); k++) {
                                 res->data.push_back(json {
@@ -3136,7 +3184,7 @@ private:
                         } else {
                             res->data = json {
                                 {"model",   model_name},
-                                {"answers", classifier->classify(task.tokens_classify)},
+                                {"answers", ha[0]},
                                 {"usage",   {{"input_tokens", task.tokens_classify.size()}, {"output_tokens", 0}}},
                             };
                         }
@@ -6172,6 +6220,15 @@ void server_routes::init_routes() {
             res->error(format_error_response("\"input\" must be provided", ERROR_TYPE_INVALID_REQUEST));
             return res;
         }
+        // /classify: "questions" answered by similarity instead of (or besides) trained heads, with "layer",
+        // "pooling", "temperature" and "questions_only"
+        json qjson;
+        if (type == SERVER_TASK_TYPE_CLASSIFY && body.contains("questions")) {
+            qjson = json::object();
+            for (const char * k : {"questions", "layer", "pooling", "temperature", "questions_only"}) {
+                if (body.contains(k)) qjson[k] = body.at(k);
+            }
+        }
         // /features: "layers" (a number or an array, default the last layer), "pooling" ("mean", "last" or both)
         std::vector<int32_t>     layers;
         std::vector<std::string> poolings;
@@ -6226,6 +6283,7 @@ void server_routes::init_routes() {
                     task.index = tasks.size();
                     task.feature_layers   = layers;
                     task.feature_poolings = poolings;
+                    task.questions        = qjson;
                     int64_t n_total = 0;
                     while (i < items.size() && task.tokens_classify_batch.size() < SERVER_CLASSIFIER_MAX_SEQ &&
                            (task.tokens_classify_batch.empty() || n_total + (int64_t) items[i].size() <= params.classifier_n_ctx)) {
@@ -6243,6 +6301,7 @@ void server_routes::init_routes() {
                 task.tokens_classify  = std::move(items[i]);
                 task.feature_layers   = layers;
                 task.feature_poolings = poolings;
+                task.questions        = qjson;
                 tasks.push_back(std::move(task));
             }
             rd.post_tasks(std::move(tasks));

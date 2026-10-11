@@ -12,6 +12,7 @@
 #include "classifier.h"
 #include "server-common.h"
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -53,6 +54,17 @@ struct server_classifier {
     json features(const llama_tokens & tokens, const std::vector<int32_t> & layers,
                   const std::vector<common_classifier_pooling> & poolings);
 
+    // a question given in the request instead of a trained head: the input is answered by the cosine similarity of its
+    // pooled residual to the pooled residuals of the answers' descriptions, centred on the descriptions' mean
+    struct question {
+        std::string               id;
+        std::string               type;      // noul (names {"true", "false"}) or choice
+        std::vector<std::string>  names;
+        std::vector<llama_tokens> descriptions;
+    };
+    std::vector<json> classify_questions(const std::vector<llama_tokens> & items, const std::vector<question> & questions,
+                                         int32_t layer, common_classifier_pooling pooling, double temperature);
+
     // pooled residuals for several inputs, decoded in one batch when they fit together (as classify_batch)
     std::vector<json> features_batch(const std::vector<llama_tokens> & items, const std::vector<int32_t> & layers,
                                      const std::vector<common_classifier_pooling> & poolings);
@@ -86,6 +98,7 @@ private:
     std::vector<std::unique_ptr<server_classifier_ctx>> ctxs;
     std::unique_ptr<server_classifier_ctx>              feat; // --features
     llama_context *                                      opt_ctx = nullptr; // --options (full depth, logits)
+    std::map<std::string, std::vector<float>>            desc_cache;        // pooled description vectors
 };
 
 // the answer of one head in the typed-decision shape
