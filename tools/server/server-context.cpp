@@ -3169,11 +3169,24 @@ private:
                         auto res = std::make_unique<server_task_result_json>();
                         res->id    = task.id;
                         res->index = task.index;
-                        res->data  = json {
-                            {"model",    model_name},
-                            {"n_tokens", task.tokens_classify.size()},
-                            {"features", classifier->features(task.tokens_classify, layers, poolings)},
-                        };
+                        if (!task.tokens_classify_batch.empty()) {
+                            // several inputs: an array of results, flattened by the handler
+                            const auto feats = classifier->features_batch(task.tokens_classify_batch, layers, poolings);
+                            res->data = json::array();
+                            for (size_t k = 0; k < feats.size(); k++) {
+                                res->data.push_back(json {
+                                    {"model",    model_name},
+                                    {"n_tokens", task.tokens_classify_batch[k].size()},
+                                    {"features", feats[k]},
+                                });
+                            }
+                        } else {
+                            res->data = json {
+                                {"model",    model_name},
+                                {"n_tokens", task.tokens_classify.size()},
+                                {"features", classifier->features(task.tokens_classify, layers, poolings)},
+                            };
+                        }
                         queue_results.send(std::move(res));
                     } catch (const std::invalid_argument & e) {
                         send_error(task.id, e.what(), ERROR_TYPE_INVALID_REQUEST);
@@ -6186,12 +6199,14 @@ void server_routes::init_routes() {
         auto & rd = res->rd;
         {
             std::vector<server_task> tasks;
-            if (batched && type == SERVER_TASK_TYPE_CLASSIFY) {
+            if (batched && (type == SERVER_TASK_TYPE_CLASSIFY || type == SERVER_TASK_TYPE_FEATURES)) {
                 // pack consecutive inputs into tasks that fit the classifier context together
                 for (size_t i = 0; i < items.size(); ) {
                     server_task task(type);
                     task.id    = rd.get_new_id();
                     task.index = tasks.size();
+                    task.feature_layers   = layers;
+                    task.feature_poolings = poolings;
                     int64_t n_total = 0;
                     while (i < items.size() && task.tokens_classify_batch.size() < SERVER_CLASSIFIER_MAX_SEQ &&
                            (task.tokens_classify_batch.empty() || n_total + (int64_t) items[i].size() <= params.classifier_n_ctx)) {
@@ -6223,7 +6238,7 @@ void server_routes::init_routes() {
         json out = json::array();
         for (auto & r : all_results.results) {
             json j = r->to_json();
-            if (type == SERVER_TASK_TYPE_CLASSIFY && j.is_array()) {
+            if ((type == SERVER_TASK_TYPE_CLASSIFY || type == SERVER_TASK_TYPE_FEATURES) && j.is_array()) {
                 for (auto & e : j) {
                     out.push_back(std::move(e));
                 }

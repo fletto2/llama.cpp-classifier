@@ -258,6 +258,17 @@ def test_features_match_heads(meta, tmp_path):
     assert b.status_code == 200 and len(b.body) == 2
     assert list(b.body[0]["features"].values())[0].keys() == {"last"}
     assert b.body[1]["n_tokens"] == 4
+    # a batch decodes the inputs together; each item's features equal its own request, up to batching noise
+    pools = ["mean", "mean1", "last"]
+    items = [[1, 2, 3], [4, 5, 6, 7], [8], [9, 10, 11, 12, 13]]
+    bb = server.make_request("POST", "/features", data={"input": items, "layers": [2, 3], "pooling": pools})
+    assert bb.status_code == 200 and len(bb.body) == len(items)
+    for it, got in zip(items, bb.body):
+        one = server.make_request("POST", "/features", data={"input": it, "layers": [2, 3], "pooling": pools}).body["features"]
+        for L in ("2", "3"):
+            for pl in pools:
+                x, y = np.array(got["features"][L][pl]), np.array(one[L][pl])
+                assert np.abs(x - y).max() <= 1e-3 * max(1.0, np.abs(y).max())
     # a layer outside the model
     assert server.make_request("POST", "/features", data={"input": text, "layers": [999]}).status_code == 400
     assert server.make_request("POST", "/features", data={"input": text, "pooling": "max"}).status_code == 400

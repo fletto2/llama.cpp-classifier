@@ -44,6 +44,10 @@ struct server_classifier {
     json features(const llama_tokens & tokens, const std::vector<int32_t> & layers,
                   const std::vector<common_classifier_pooling> & poolings);
 
+    // pooled residuals for several inputs, decoded in one batch when they fit together (as classify_batch)
+    std::vector<json> features_batch(const std::vector<llama_tokens> & items, const std::vector<int32_t> & layers,
+                                     const std::vector<common_classifier_pooling> & poolings);
+
     // the same as float arrays: layers x poolings x n_embd
     std::vector<float> features_raw(const llama_tokens & tokens, const std::vector<int32_t> & layers,
                                     const std::vector<common_classifier_pooling> & poolings);

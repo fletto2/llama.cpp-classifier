@@ -105,7 +105,7 @@ void server_classifier::init(llama_model * model, const std::vector<std::string>
         ctxs.push_back(make_ctx(model, n_ctx, n_ubatch, n_threads, n_embd, {L}, L, n_seq_batch));
     }
     if (features) {
-        feat = make_ctx(model, n_ctx, n_ubatch, n_threads, n_embd, {}, 0);
+        feat = make_ctx(model, n_ctx, n_ubatch, n_threads, n_embd, {}, 0, n_seq_batch);
     }
 }
 
@@ -345,6 +345,50 @@ json server_classifier::features(const llama_tokens & tokens, const std::vector<
             off += n_embd;
         }
         out[std::to_string(L)] = per;
+    }
+    return out;
+}
+
+std::vector<json> server_classifier::features_batch(const std::vector<llama_tokens> & items, const std::vector<int32_t> & layers,
+                                                   const std::vector<common_classifier_pooling> & poolings) {
+    int64_t n_total = 0;
+    for (const auto & tokens : items) {
+        check_tokens(tokens);
+        n_total += (int64_t) tokens.size();
+    }
+    std::vector<json> out;
+    if (!feat || items.size() == 1 || (int32_t) items.size() > n_seq_batch || n_total > n_ctx) {
+        for (const auto & tokens : items) {
+            out.push_back(features(tokens, layers, poolings));
+        }
+        return out;
+    }
+    if (layers.empty() || poolings.empty()) {
+        throw std::invalid_argument("features: no layers or poolings requested");
+    }
+    for (int32_t L : layers) {
+        if (L < 1 || L > n_layer_) {
+            throw std::invalid_argument("features: layer " + std::to_string(L) + " is outside 1.." + std::to_string(n_layer_));
+        }
+    }
+    feat->cap.set_layers(n_embd, layers);
+    llama_set_n_layer_exit(feat->ctx, *std::max_element(layers.begin(), layers.end()));
+    decode_batch(*feat, items, n_total);
+    std::vector<float> x;
+    int64_t begin = 0;
+    for (const auto & tokens : items) {
+        const int64_t end = begin + (int64_t) tokens.size();
+        json o = json::object();
+        for (int32_t L : layers) {
+            json per = json::object();
+            for (auto pool : poolings) {
+                feat->cap.get_range(L, pool, begin, end, x);
+                per[common_classifier_pooling_name(pool)] = x;
+            }
+            o[std::to_string(L)] = per;
+        }
+        out.push_back(o);
+        begin = end;
     }
     return out;
 }
