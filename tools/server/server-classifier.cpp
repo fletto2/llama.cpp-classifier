@@ -145,6 +145,8 @@ void server_classifier::check_tokens(const llama_tokens & tokens) const {
 
 void server_classifier::decode(server_classifier_ctx & c, const llama_tokens & tokens) {
     c.cap.reset();
+    c.cap.keep_rows = std::any_of(heads.begin(), heads.end(), [](const common_classifier_head & h) {
+        return h.pooling == COMMON_CLASSIFIER_POOL_SPAN; });
     llama_memory_clear(llama_get_memory(c.ctx), true);
     llama_tokens ids = tokens;
     const int32_t ret = llama_decode(c.ctx, llama_batch_get_one(ids.data(), (int32_t) ids.size()));
@@ -204,18 +206,38 @@ static json server_classifier_answer_body(const common_classifier_head & head, c
     return json();
 }
 
-json server_classifier::classify(const llama_tokens & tokens) {
+// the pooled feature for one head and one item (rows [base, base + n) of the capture); span heads use the item's
+// term and report how many span tokens they read (0 = no term or not found: mean1 instead)
+static int32_t head_feature(const common_classifier_capture & cap, const llama_vocab * vocab, const common_classifier_head & head,
+                            const llama_tokens & tokens, int64_t base, const std::string & term, bool batched, std::vector<float> & x) {
+    if (head.pooling == COMMON_CLASSIFIER_POOL_SPAN && !term.empty()) {
+        const auto pos = common_classifier_term_positions(vocab, tokens, term, head.span_window);
+        if (!pos.empty() && cap.get_positions(head.layer, base, pos, x)) {
+            return (int32_t) pos.size();
+        }
+    }
+    if (batched) {
+        cap.get_range(head.layer, head.pooling, base, base + (int64_t) tokens.size(), x);
+    } else {
+        cap.get(head.layer, head.pooling, x);
+    }
+    return 0;
+}
+
+json server_classifier::classify(const llama_tokens & tokens, const std::string & term) {
     check_tokens(tokens);
     json answers = json::object();
     std::vector<float> x;
+    const llama_vocab * vocab = llama_model_get_vocab(model);
     for (auto & c : ctxs) {
         decode(*c, tokens);
         for (const auto & head : heads) {
             if (head.layer != c->cap.layers[0]) {
                 continue;
             }
-            c->cap.get(head.layer, head.pooling, x);
+            const int32_t n_span = head_feature(c->cap, vocab, head, tokens, 0, term, false, x);
             answers[head.question_id] = server_classifier_answer(head, common_classifier_probs(head, x.data()));
+            if (head.pooling == COMMON_CLASSIFIER_POOL_SPAN) answers[head.question_id]["span_tokens"] = n_span;
         }
     }
     return answers;
@@ -254,7 +276,7 @@ void server_classifier::decode_batch(server_classifier_ctx & c, const std::vecto
     }
 }
 
-std::vector<json> server_classifier::classify_batch(const std::vector<llama_tokens> & items) {
+std::vector<json> server_classifier::classify_batch(const std::vector<llama_tokens> & items, const std::vector<std::string> & terms) {
     int64_t n_total = 0;
     for (const auto & tokens : items) {
         check_tokens(tokens);
@@ -262,13 +284,14 @@ std::vector<json> server_classifier::classify_batch(const std::vector<llama_toke
     }
     std::vector<json> out;
     if (items.size() == 1 || (int32_t) items.size() > n_seq_batch || n_total > n_ctx) {
-        for (const auto & tokens : items) {
-            out.push_back(classify(tokens));
+        for (size_t k = 0; k < items.size(); k++) {
+            out.push_back(classify(items[k], k < terms.size() ? terms[k] : std::string()));
         }
         return out;
     }
     out.assign(items.size(), json::object());
     std::vector<float> x;
+    const llama_vocab * vocab = llama_model_get_vocab(model);
     for (auto & c : ctxs) {
         decode_batch(*c, items, n_total);
         int64_t begin = 0;
@@ -278,8 +301,9 @@ std::vector<json> server_classifier::classify_batch(const std::vector<llama_toke
                 if (head.layer != c->cap.layers[0]) {
                     continue;
                 }
-                c->cap.get_range(head.layer, head.pooling, begin, end, x);
+                const int32_t n_span = head_feature(c->cap, vocab, head, items[k], begin, k < terms.size() ? terms[k] : std::string(), true, x);
                 out[k][head.question_id] = server_classifier_answer(head, common_classifier_probs(head, x.data()));
+                if (head.pooling == COMMON_CLASSIFIER_POOL_SPAN) out[k][head.question_id]["span_tokens"] = n_span;
             }
             begin = end;
         }

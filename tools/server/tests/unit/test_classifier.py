@@ -210,6 +210,35 @@ def test_classify_questions_need_features():
     assert res.status_code != 200
 
 
+def test_classify_span_pooling(meta, tmp_path):
+    # a span head pools the tokens of the request's "term"; without a match it falls back to mean1
+    rng = np.random.default_rng(3)
+    n = meta["n_embd"]
+    w = rng.standard_normal(n) * 0.1
+    span = write_head(str(tmp_path / "span.gguf"), n, 3, w, 0.0, "span", pooling="span")
+    mean1 = write_head(str(tmp_path / "mean1.gguf"), n, 3, w, 0.0, "mean1", pooling="mean1")
+    server.extra_args = ["--classifier", span, "--classifier", mean1]
+    server.start()
+    text = "Once upon a time there was a little girl who loved her cat."
+    hit = server.make_request("POST", "/classify", data={"input": text, "term": "cat"}).body["answers"]
+    assert hit["span"]["span_tokens"] > 0
+    miss = server.make_request("POST", "/classify", data={"input": text, "term": "zebra"}).body["answers"]
+    assert miss["span"]["span_tokens"] == 0
+    assert miss["span"]["noul"] == pytest.approx(miss["mean1"]["noul"], abs=1e-6)
+    none = server.make_request("POST", "/classify", data={"input": text}).body["answers"]
+    assert none["span"]["noul"] == pytest.approx(none["mean1"]["noul"], abs=1e-6)
+    # per-input terms in a batch equal single requests
+    texts = [text, "The dog ran to the park with the boy.", "A cat and a dog played."]
+    terms = ["cat", "park", "dog"]
+    b = server.make_request("POST", "/classify", data={"input": texts, "term": terms})
+    assert b.status_code == 200
+    for t, term, r in zip(texts, terms, b.body):
+        one = server.make_request("POST", "/classify", data={"input": t, "term": term}).body["answers"]["span"]
+        assert r["answers"]["span"]["span_tokens"] == one["span_tokens"] > 0
+        assert r["answers"]["span"]["noul"] == pytest.approx(one["noul"], abs=5e-3)
+    assert server.make_request("POST", "/classify", data={"input": texts, "term": ["a"]}).status_code == 400
+
+
 def test_classify_input_errors(meta, tmp_path):
     head = write_head(str(tmp_path / "zero.gguf"), meta["n_embd"], 2, np.zeros(meta["n_embd"]), 0.0)
     server.extra_args = ["--classifier", head, "--classifier-ctx", "32"]

@@ -5,6 +5,7 @@
 #include "llama.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -34,6 +35,7 @@ const char * common_classifier_pooling_name(common_classifier_pooling pooling) {
     switch (pooling) {
         case COMMON_CLASSIFIER_POOL_LAST:  return "last";
         case COMMON_CLASSIFIER_POOL_MEAN1: return "mean1";
+        case COMMON_CLASSIFIER_POOL_SPAN:  return "span";
         default:                           return "mean";
     }
 }
@@ -42,6 +44,7 @@ bool common_classifier_pooling_from_name(const std::string & name, common_classi
     if (name == "mean") { pooling = COMMON_CLASSIFIER_POOL_MEAN; return true; }
     if (name == "last") { pooling = COMMON_CLASSIFIER_POOL_LAST; return true; }
     if (name == "mean1") { pooling = COMMON_CLASSIFIER_POOL_MEAN1; return true; }
+    if (name == "span") { pooling = COMMON_CLASSIFIER_POOL_SPAN; return true; }
     return false;
 }
 
@@ -146,6 +149,10 @@ bool common_classifier_head_load(const std::string & path, common_classifier_hea
     }
     head.question_id = get_str("classifier.question_id", "relevant");
     head.version     = get_str("classifier.version", "");
+    {
+        const int64_t id_sw = gguf_find_key(ctx, "classifier.span_window");
+        if (id_sw >= 0) head.span_window = (int32_t) gguf_get_val_u32(ctx, id_sw);
+    }
     head.model       = get_str("classifier.model", "");
     const std::string type = get_str("classifier.type", "noul");
     if (!common_classifier_type_from_name(type, head.type)) {
@@ -153,7 +160,7 @@ bool common_classifier_head_load(const std::string & path, common_classifier_hea
     }
     const std::string pooling = get_str("classifier.pooling", "mean");
     if (!common_classifier_pooling_from_name(pooling, head.pooling)) {
-        fail("unsupported classifier.pooling '" + pooling + "' (mean, last, mean1)");
+        fail("unsupported classifier.pooling '" + pooling + "' (mean, last, mean1, span)");
     }
     const int64_t id_opt = gguf_find_key(ctx, "classifier.options");
     if (id_opt >= 0) {
@@ -202,6 +209,7 @@ bool common_classifier_head_save(const std::string & path, const common_classifi
     gguf_set_val_str(ctx, "classifier.type", common_classifier_type_name(head.type));
     gguf_set_val_str(ctx, "classifier.pooling", common_classifier_pooling_name(head.pooling));
     if (!head.version.empty()) gguf_set_val_str(ctx, "classifier.version", head.version.c_str());
+    if (head.pooling == COMMON_CLASSIFIER_POOL_SPAN) gguf_set_val_u32(ctx, "classifier.span_window", (uint32_t) head.span_window);
     if (!head.model.empty())   gguf_set_val_str(ctx, "classifier.model",   head.model.c_str());
     if (!head.options.empty()) {
         std::vector<const char *> opts;
@@ -323,7 +331,7 @@ bool common_classifier_capture::get(int32_t layer, common_classifier_pooling poo
     }
     out.resize(n_embd);
     // mean1 falls back to the plain mean for a one-token input
-    const bool skip_first = pooling == COMMON_CLASSIFIER_POOL_MEAN1 && rows[i] > 1;
+    const bool skip_first = (pooling == COMMON_CLASSIFIER_POOL_MEAN1 || pooling == COMMON_CLASSIFIER_POOL_SPAN) && rows[i] > 1;  // span without a term: mean1
     for (int32_t j = 0; j < n_embd; j++) {
         if (pooling == COMMON_CLASSIFIER_POOL_LAST) {
             out[j] = last[i][j];
@@ -333,6 +341,63 @@ bool common_classifier_capture::get(int32_t layer, common_classifier_pooling poo
             out[j] = (float) (sum[i][j] / (double) rows[i]);
         }
     }
+    return true;
+}
+
+std::vector<int32_t> common_classifier_term_positions(const struct llama_vocab * vocab, const std::vector<int32_t> & tokens,
+                                                      const std::string & term, int32_t window) {
+    std::vector<int32_t> out;
+    if (term.empty() || tokens.empty()) {
+        return out;
+    }
+    // byte offsets of every token in the decoded input
+    std::string text;
+    std::vector<size_t> beg(tokens.size()), end(tokens.size());
+    std::vector<char> buf(256);
+    for (size_t i = 0; i < tokens.size(); i++) {
+        int32_t n = llama_token_to_piece(vocab, tokens[i], buf.data(), (int32_t) buf.size(), 0, false);
+        if (n < 0) {
+            buf.resize(-n);
+            n = llama_token_to_piece(vocab, tokens[i], buf.data(), (int32_t) buf.size(), 0, false);
+        }
+        beg[i] = text.size();
+        if (n > 0) text.append(buf.data(), n);
+        end[i] = text.size();
+    }
+    auto lower = [](std::string s) { for (auto & ch : s) ch = (char) std::tolower((unsigned char) ch); return s; };
+    const std::string hay = lower(text), needle = lower(term);
+    std::vector<char> mark(tokens.size(), 0);
+    for (size_t p = hay.find(needle); p != std::string::npos; p = hay.find(needle, p + 1)) {
+        const size_t q = p + needle.size();
+        for (size_t i = 0; i < tokens.size(); i++) {
+            if (beg[i] < q && end[i] > p) {
+                const int64_t lo = std::max<int64_t>(1, (int64_t) i - window);
+                const int64_t hi = std::min<int64_t>((int64_t) tokens.size() - 1, (int64_t) i + window);
+                for (int64_t k = lo; k <= hi; k++) mark[k] = 1;
+            }
+        }
+    }
+    for (size_t i = 1; i < tokens.size(); i++) if (mark[i]) out.push_back((int32_t) i);
+    return out;
+}
+
+bool common_classifier_capture::get_positions(int32_t layer, int64_t base, const std::vector<int32_t> & positions,
+                                              std::vector<float> & out) const {
+    const int i = index_of(layer);
+    if (i < 0 || positions.empty()) {
+        return false;
+    }
+    std::vector<double> s(n_embd, 0.0);
+    for (int32_t p : positions) {
+        const int64_t r = base + p;
+        if (r < 0 || (int64_t) all[i].size() < (r + 1) * n_embd) {
+            return false;
+        }
+        const float * row = all[i].data() + r * n_embd;
+        for (int32_t j = 0; j < n_embd; j++) s[j] += row[j];
+    }
+    out.resize(n_embd);
+    for (int32_t j = 0; j < n_embd; j++) out[j] = (float) (s[j] / (double) positions.size());
     return true;
 }
 
@@ -348,7 +413,7 @@ bool common_classifier_capture::get_range(int32_t layer, common_classifier_pooli
         return true;
     }
     // mean1 falls back to the plain mean for a one-token item, as in get()
-    const int64_t b = (pooling == COMMON_CLASSIFIER_POOL_MEAN1 && end - begin > 1) ? begin + 1 : begin;
+    const int64_t b = ((pooling == COMMON_CLASSIFIER_POOL_MEAN1 || pooling == COMMON_CLASSIFIER_POOL_SPAN) && end - begin > 1) ? begin + 1 : begin;
     std::vector<double> s(n_embd, 0.0);
     for (int64_t r = b; r < end; r++) {
         const float * row = all[i].data() + r * n_embd;

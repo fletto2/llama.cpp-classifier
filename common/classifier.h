@@ -39,7 +39,14 @@ enum common_classifier_pooling {
     COMMON_CLASSIFIER_POOL_MEAN,
     COMMON_CLASSIFIER_POOL_LAST,
     COMMON_CLASSIFIER_POOL_MEAN1, // mean without the first token (the attention-sink position)
+    COMMON_CLASSIFIER_POOL_SPAN,  // mean over the tokens of a term given with the input (plus a window); mean1 without one
 };
+
+// token positions (within the input) that cover any case-insensitive occurrence of `term` in the decoded input,
+// widened by `window` tokens on each side; the first position (the attention sink) is left out. Empty when the
+// term does not occur.
+std::vector<int32_t> common_classifier_term_positions(const struct llama_vocab * vocab, const std::vector<int32_t> & tokens,
+                                                      const std::string & term, int32_t window);
 
 const char * common_classifier_type_name(common_classifier_type type);
 bool         common_classifier_type_from_name(const std::string & name, common_classifier_type & type);
@@ -58,6 +65,7 @@ struct common_classifier_head {
     std::vector<float>        bias;       // noul 1, choice K, score K-1
     std::string               version;    // classifier.version: an id for this fit (training run, data), returned with answers
     std::string               model;      // classifier.model: the model the head was fitted on (common_classifier_model_desc)
+    int32_t                   span_window = 2; // span pooling: tokens added on each side of the term (classifier.span_window)
 
     int32_t n_classes() const; // noul 2 (index 1 = true), choice / score K
     int32_t n_out()     const; // rows of weight: choice K, else 1
@@ -104,6 +112,8 @@ struct common_classifier_capture {
     bool get(int32_t layer, common_classifier_pooling pooling, std::vector<float> & out) const;
     // pooled feature of the rows [begin, end) of one layer (one item of a batch); needs keep_rows
     bool get_range(int32_t layer, common_classifier_pooling pooling, int64_t begin, int64_t end, std::vector<float> & out) const;
+    // mean of the rows base + positions of one layer (span pooling); needs keep_rows; false if a row is missing
+    bool get_positions(int32_t layer, int64_t base, const std::vector<int32_t> & positions, std::vector<float> & out) const;
 
     static bool cb_eval(struct ggml_tensor * t, bool ask, void * user_data);
 };

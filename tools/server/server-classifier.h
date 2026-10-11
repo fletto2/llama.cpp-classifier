@@ -44,11 +44,11 @@ struct server_classifier {
     json score_options(const std::vector<llama_tokens> & full, const std::vector<std::string> & names);
 
     // typed-decision answers for one input: {"<question_id>": {"type": ..., ...}, ...}
-    json classify(const llama_tokens & tokens);
+    json classify(const llama_tokens & tokens, const std::string & term = "");
 
     // the answers for several inputs, decoded in one batch when they fit the context together (at most
     // SERVER_CLASSIFIER_MAX_SEQ inputs, plain-attention models); otherwise one by one
-    std::vector<json> classify_batch(const std::vector<llama_tokens> & items);
+    std::vector<json> classify_batch(const std::vector<llama_tokens> & items, const std::vector<std::string> & terms = {});
 
     // pooled residuals: {"<layer>": {"mean": [...], "last": [...]}} for the requested layers and poolings
     json features(const llama_tokens & tokens, const std::vector<int32_t> & layers,

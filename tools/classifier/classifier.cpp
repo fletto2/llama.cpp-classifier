@@ -2,13 +2,14 @@
 // hidden states. The heads it writes are served by llama-server (--classifier head.gguf, POST /classify).
 //
 //   llama-classifier train    -m model.gguf --data train.jsonl --type noul|choice|score --out head.gguf
-//                             [--question-id ID] [--options a,b,c] [--layers auto|L,L,..] [--pooling auto|mean|last|mean1]
+//                             [--question-id ID] [--options a,b,c] [--layers auto|L,L,..] [--pooling auto|mean|last|mean1|span] [--span-window N]
 //                             [--C 0.01,0.1,1] [--folds 5] [--balanced] [--seed N]
 //   llama-classifier eval     -m model.gguf --head head.gguf --data test.jsonl [--predictions out.jsonl]
-//   llama-classifier features -m model.gguf --data data.jsonl --layers L,L,..|all --out prefix [--pooling mean|last|mean1]
+//   llama-classifier features -m model.gguf --data data.jsonl --layers L,L,..|all --out prefix [--pooling mean|last|mean1|span]
 //   llama-classifier fit      --features prefix.L12.mean.f32 --labels prefix.labels.txt --layer 12 --type ... --out head.gguf
 //
-// Data (JSONL), one item per line: {"text": "...", "label": ...} or {"tokens": [ids], "label": ...}.
+// Data (JSONL), one item per line: {"text": "...", "label": ...} or {"tokens": [ids], "label": ...}, optionally "term": "..."
+// (span pooling: the mean over the tokens of that term in the input, plus --span-window tokens on each side, default 2).
 // Labels: noul true/false (also 1/0, "yes"/"no"); choice an option id (the options are --options, or the
 // sorted distinct labels); score a level index 0..K-1, or a level name from --options.
 // Common: -ngl N (default 0), -t N threads, -c N max tokens per item (default 512; longer items are cut).
@@ -45,12 +46,13 @@ struct item {
     std::string  text;
     llama_tokens tokens;
     json         label;
+    std::string  term;   // span pooling: the term whose tokens are pooled ("term" in the JSONL)
 };
 
 struct args_t {
     std::string cmd, model, data, out, head, type = "noul", question_id, options, layers = "auto", pooling = "auto",
                 Cs = "0.01,0.1,1", features, labels, predictions, version, prompt_hash, grid_out, grids;
-    int32_t ngl = 0, threads = 0, n_ctx = 512, folds = 5, layer = 0;
+    int32_t ngl = 0, threads = 0, n_ctx = 512, folds = 5, layer = 0, span_window = 2;
     uint32_t seed = 42;
     bool balanced = false;
 };
@@ -74,10 +76,10 @@ static void usage() {
     fprintf(stderr,
         "usage:\n"
         "  llama-classifier train    -m model.gguf --data train.jsonl --type noul|choice|score --out head.gguf\n"
-        "                            [--question-id ID] [--options a,b,c] [--layers auto|L,L,..] [--pooling auto|mean|last|mean1]\n"
+        "                            [--question-id ID] [--options a,b,c] [--layers auto|L,L,..] [--pooling auto|mean|last|mean1|span] [--span-window N]\n"
         "                            [--C 0.01,0.1,1] [--folds 5] [--balanced] [--seed N]\n"
         "  llama-classifier eval     -m model.gguf --head head.gguf --data test.jsonl [--predictions out.jsonl]\n"
-        "  llama-classifier features -m model.gguf --data data.jsonl --layers L,L,..|all --out prefix [--pooling mean|last|mean1]\n"
+        "  llama-classifier features -m model.gguf --data data.jsonl --layers L,L,..|all --out prefix [--pooling mean|last|mean1|span]\n"
         "  llama-classifier fit      --features x.f32 --labels labels.txt --layer L --type ... --out head.gguf\n"
         "  llama-classifier pick-layer --grids a.tsv,b.tsv,..   (one layer for several heads; grids from train --grid-out)\n"
         "  train also takes: --version ID (default <question>-<UTC time>-<data hash>), --prompt-hash STR, --grid-out FILE\n"
@@ -103,6 +105,7 @@ static args_t parse(int argc, char ** argv) {
         else if (k == "--layers")               a.layers = v();
         else if (k == "--layer")                a.layer = std::stoi(v());
         else if (k == "--pooling")              a.pooling = v();
+        else if (k == "--span-window")          a.span_window = std::stoi(v());
         else if (k == "--C")                    a.Cs = v();
         else if (k == "--folds")                a.folds = std::stoi(v());
         else if (k == "--balanced")             a.balanced = true;
@@ -139,6 +142,7 @@ static std::vector<item> read_items(const std::string & path, bool need_label) {
         else if (j.contains("text")) it.text = j.at("text").get<std::string>();
         else fatal(path + ":" + std::to_string(ln) + ": needs \"text\" or \"tokens\"");
         if (j.contains("label")) it.label = j.at("label");
+        if (j.contains("term")) it.term = j.at("term").get<std::string>();
         else if (need_label) fatal(path + ":" + std::to_string(ln) + ": needs \"label\"");
         items.push_back(std::move(it));
     }
@@ -202,11 +206,16 @@ struct extractor {
         return t;
     }
 
-    // run one item; afterwards cap.get(layer, pooling, out) returns its features
+    llama_tokens last;    // the tokens of the item run last
+    int64_t      n_noterm = 0;
+
+    // run one item; afterwards pooled() returns its features
     void run(const item & it) {
         llama_tokens t = tokens_of(it);
         if (t.empty()) fatal("an item has no tokens");
+        last = t;
         cap.reset();
+        cap.keep_rows = true;   // span pooling reads single rows
         llama_memory_clear(llama_get_memory(ctx), true);
         const int32_t ret = llama_decode(ctx, llama_batch_get_one(t.data(), (int32_t) t.size()));
         if (!cap.error.empty()) fatal(cap.error);
@@ -215,9 +224,21 @@ struct extractor {
     }
 };
 
+// the pooled feature of the item run last; span pooling uses the item's term (mean1 when it has none or it is not found)
+static void pooled(extractor & ex, const item & it, int32_t layer, common_classifier_pooling pool, int32_t span_window,
+                   std::vector<float> & v) {
+    if (pool == COMMON_CLASSIFIER_POOL_SPAN) {
+        const auto pos = common_classifier_term_positions(ex.vocab, ex.last, it.term, span_window);
+        if (!pos.empty() && ex.cap.get_positions(layer, 0, pos, v)) return;
+        ex.n_noterm++;
+    }
+    ex.cap.get(layer, pool, v);
+}
+
 // features of all items for the given layers and poolings: feats[layer index][pooling] = n x d
 static std::vector<std::vector<std::vector<float>>> extract(extractor & ex, const std::vector<item> & items,
-                                                            const std::vector<common_classifier_pooling> & pools) {
+                                                            const std::vector<common_classifier_pooling> & pools,
+                                                            int32_t span_window = 2) {
     const size_t nl = ex.cap.layers.size();
     std::vector<std::vector<std::vector<float>>> feats(nl, std::vector<std::vector<float>>(pools.size()));
     std::vector<float> v;
@@ -226,7 +247,7 @@ static std::vector<std::vector<std::vector<float>>> extract(extractor & ex, cons
         ex.run(items[i]);
         for (size_t l = 0; l < nl; l++) {
             for (size_t p = 0; p < pools.size(); p++) {
-                ex.cap.get(ex.cap.layers[l], pools[p], v);
+                pooled(ex, items[i], ex.cap.layers[l], pools[p], span_window, v);
                 feats[l][p].insert(feats[l][p].end(), v.begin(), v.end());
             }
         }
@@ -237,6 +258,7 @@ static std::vector<std::vector<std::vector<float>>> extract(extractor & ex, cons
     }
     fprintf(stderr, "\n");
     if (ex.n_cut) fprintf(stderr, "warning: %lld items were cut to -c %d tokens\n", (long long) ex.n_cut, ex.n_ctx);
+    if (ex.n_noterm) fprintf(stderr, "warning: span pooling fell back to mean1 %lld times (no term, or the term is not in the input)\n", (long long) ex.n_noterm);
     return feats;
 }
 
@@ -293,12 +315,14 @@ static int cmd_train(const args_t & a) {
     if (a.pooling == "auto" || a.pooling == "mean") pools.push_back(COMMON_CLASSIFIER_POOL_MEAN);
     if (a.pooling == "auto" || a.pooling == "last") pools.push_back(COMMON_CLASSIFIER_POOL_LAST);
     if (a.pooling == "auto" || a.pooling == "mean1") pools.push_back(COMMON_CLASSIFIER_POOL_MEAN1);
-    if (pools.empty()) fatal("--pooling must be auto, mean, last or mean1");
+    const bool any_term = std::any_of(items.begin(), items.end(), [](const item & it) { return !it.term.empty(); });
+    if ((a.pooling == "auto" && any_term) || a.pooling == "span") pools.push_back(COMMON_CLASSIFIER_POOL_SPAN);
+    if (pools.empty()) fatal("--pooling must be auto, mean, last, mean1 or span");
     std::vector<double> Cs;
     for (const auto & s : split(a.Cs, ',')) Cs.push_back(std::stod(s));
 
     extractor ex(a, layers);
-    const auto feats = extract(ex, items, pools);
+    const auto feats = extract(ex, items, pools, a.span_window);
     const int32_t d = ex.cap.n_embd;
     const int64_t n = (int64_t) items.size();
 
@@ -326,7 +350,7 @@ static int cmd_train(const args_t & a) {
 
     common_classifier_head h;
     h.question_id = a.question_id.empty() ? "relevant" : a.question_id;
-    h.type = type; h.pooling = tr.pooling; h.layer = tr.layer; h.n_embd = d;
+    h.type = type; h.pooling = tr.pooling; h.layer = tr.layer; h.n_embd = d; h.span_window = a.span_window;
     h.options = options; h.weight = tr.weight; h.bias = tr.bias;
     h.model = common_classifier_model_desc(ex.model);
     // data fingerprint: FNV-1a over the training file, so two fits on different data get different versions
@@ -385,7 +409,7 @@ static int cmd_eval(const args_t & a) {
     std::vector<float> v;
     for (size_t i = 0; i < items.size(); i++) {
         ex.run(items[i]);
-        ex.cap.get(h.layer, h.pooling, v);
+        pooled(ex, items[i], h.layer, h.pooling, h.span_window, v);
         const auto p = common_classifier_probs(h, v.data());
         probs.insert(probs.end(), p.begin(), p.end());
         if (pred) pred << json({{"index", i}, {"label", items[i].label}, {"probabilities", p}}).dump() << "\n";
@@ -403,8 +427,9 @@ static int cmd_features(const args_t & a) {
     if (a.pooling == "auto" || a.pooling == "mean") pools.push_back(COMMON_CLASSIFIER_POOL_MEAN);
     if (a.pooling == "auto" || a.pooling == "last") pools.push_back(COMMON_CLASSIFIER_POOL_LAST);
     if (a.pooling == "auto" || a.pooling == "mean1") pools.push_back(COMMON_CLASSIFIER_POOL_MEAN1);
+    if (a.pooling == "span") pools.push_back(COMMON_CLASSIFIER_POOL_SPAN);
     extractor ex(a, layers);
-    const auto feats = extract(ex, items, pools);
+    const auto feats = extract(ex, items, pools, a.span_window);
     for (size_t l = 0; l < layers.size(); l++) {
         for (size_t p = 0; p < pools.size(); p++) {
             const std::string fn = a.out + ".L" + std::to_string(layers[l]) + "." + common_classifier_pooling_name(pools[p]) + ".f32";

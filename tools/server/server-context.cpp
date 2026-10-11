@@ -3176,8 +3176,9 @@ private:
                         }
                         std::vector<json> ha(items.size(), json::object());
                         if (classifier->enabled() && !task.questions.value("questions_only", false)) {
-                            ha = task.tokens_classify_batch.empty() ? std::vector<json>{classifier->classify(task.tokens_classify)}
-                                                                    : classifier->classify_batch(task.tokens_classify_batch);
+                            ha = task.tokens_classify_batch.empty()
+                                ? std::vector<json>{classifier->classify(task.tokens_classify, task.terms.empty() ? std::string() : task.terms[0])}
+                                : classifier->classify_batch(task.tokens_classify_batch, task.terms);
                         }
                         for (size_t k = 0; k < qa.size(); k++) {
                             for (const auto & [qid, a] : qa[k].items()) ha[k][qid] = a;
@@ -6283,6 +6284,19 @@ void server_routes::init_routes() {
                 return res;
             }
         }
+        // /classify: "term" (a string for every input, or one per input) for heads with span pooling
+        std::vector<std::string> terms;
+        if (type == SERVER_TASK_TYPE_CLASSIFY && body.contains("term")) {
+            const json & t = body.at("term");
+            if (t.is_string()) {
+                terms.assign(items.size(), t.get<std::string>());
+            } else if (t.is_array() && t.size() == items.size()) {
+                for (const auto & e : t) terms.push_back(e.is_string() ? e.get<std::string>() : std::string());
+            } else {
+                res->error(format_error_response("\"term\" must be a string or an array with one string per input", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+        }
 
         auto & rd = res->rd;
         {
@@ -6300,6 +6314,7 @@ void server_routes::init_routes() {
                     while (i < items.size() && task.tokens_classify_batch.size() < SERVER_CLASSIFIER_MAX_SEQ &&
                            (task.tokens_classify_batch.empty() || n_total + (int64_t) items[i].size() <= params.classifier_n_ctx)) {
                         n_total += (int64_t) items[i].size();
+                        if (!terms.empty()) task.terms.push_back(terms[i]);
                         task.tokens_classify_batch.push_back(std::move(items[i++]));
                     }
                     tasks.push_back(std::move(task));
@@ -6314,6 +6329,7 @@ void server_routes::init_routes() {
                 task.feature_layers   = layers;
                 task.feature_poolings = poolings;
                 task.questions        = qjson;
+                if (!terms.empty()) task.terms = {terms[i]};
                 tasks.push_back(std::move(task));
             }
             rd.post_tasks(std::move(tasks));
