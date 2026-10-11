@@ -6978,6 +6978,12 @@ class GGMLQuantizationType(IntEnum):
     Q2_0    = 42
     F8_E4M3 = 43
     PTQ1_0  = 143
+    TQ2_T   = 144  # agentionai/llama.cpp trellis types 144-149
+    TQK6    = 145
+    TQK7    = 146
+    TQP5    = 147
+    TQP6    = 148
+    TQP7    = 149
     IQ3_K   = 150  # Avalon's 43, ik_llama.cpp's 138
     IQ3_KS  = 151  # Avalon's 44: ik_llama.cpp's IQ3_KS codebook with a block scale (104 B / 256)
 
@@ -7037,7 +7043,13 @@ class LlamaFileType(IntEnum):
     MOSTLY_Q1_0          = 40  # except 1d tensors
     MOSTLY_Q2_0          = 41  # except 1d tensors
     MOSTLY_F8_E4M3       = 42  # except 1d tensors
-    MOSTLY_PTQ1_0        = 129  # except 1d tensors
+    MOSTLY_PTQ1_0        = 143  # except 1d tensors (llama.h id; was listed as 129, the ggml ftype)
+    MOSTLY_TQ2_T         = 144  # except 1d tensors
+    MOSTLY_TQK6          = 145  # except 1d tensors
+    MOSTLY_TQK7          = 146  # except 1d tensors
+    MOSTLY_TQP5          = 147  # except 1d tensors
+    MOSTLY_TQP6          = 148  # except 1d tensors
+    MOSTLY_TQP7          = 149  # except 1d tensors
 
     GUESSED              = 1024  # not specified in the model file
 
@@ -7217,6 +7229,12 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.Q2_0:    (64, 2 + 16),
     GGMLQuantizationType.F8_E4M3: (1, 1),
     GGMLQuantizationType.PTQ1_0:  (128, 2 + 24 + 2),
+    GGMLQuantizationType.TQ2_T:   (128, 2 + 32),
+    GGMLQuantizationType.TQK6:    (128, 2 + 4 * 6),
+    GGMLQuantizationType.TQK7:    (128, 2 + 4 * 7),
+    GGMLQuantizationType.TQP5:    (128, 2 + 8 * 5),
+    GGMLQuantizationType.TQP6:    (128, 2 + 8 * 6),
+    GGMLQuantizationType.TQP7:    (128, 2 + 8 * 7),
     GGMLQuantizationType.IQ3_K:   (256, 2 + 2 + 2 + QK_K // 32 + QK_K // 4 + QK_K // 8),
     GGMLQuantizationType.IQ3_KS:  (256, 2 + 2 + QK_K // 64 + QK_K // 4 + QK_K // 8),
 }
