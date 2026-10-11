@@ -3834,6 +3834,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--classifier-ubatch"}, "N",
+        string_format("tokens per compute step of the classifier contexts; their compute buffers scale with it, inputs and "
+                      "batches longer than N are processed in several steps (default: %d)", params.classifier_n_ubatch),
+        [](common_params & params, int value) {
+            params.classifier_n_ubatch = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--features"},
         "serve POST /features: mean- and last-token-pooled hidden states of chosen layers (inputs up to --classifier-ctx tokens)",
         [](common_params & params) {

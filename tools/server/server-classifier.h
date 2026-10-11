@@ -27,7 +27,8 @@ struct server_classifier {
 
     // load the heads and create one early-exit context per layer, plus the features context if asked for;
     // throws on error
-    void init(llama_model * model, const std::vector<std::string> & paths, int32_t n_ctx, int32_t n_threads, bool features);
+    void init(llama_model * model, const std::vector<std::string> & paths, int32_t n_ctx, int32_t n_threads, bool features,
+              int32_t n_ubatch = 512);
 
     bool enabled()          const { return !heads.empty(); }
     bool features_enabled() const;
@@ -64,6 +65,7 @@ private:
     llama_model * model    = nullptr;
     int32_t       n_embd   = 0;
     int32_t       n_ctx    = 0; // requested maximum input length (the context itself is padded to a multiple of 256)
+    int32_t       n_ubatch = 512; // tokens per compute step (sizes the compute buffers)
     int32_t       n_vocab  = 0;
     int32_t       n_layer_ = 0;
     int32_t       n_threads = 1;

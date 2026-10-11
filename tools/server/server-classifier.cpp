@@ -22,7 +22,7 @@ bool server_classifier::features_enabled() const {
     return feat != nullptr;
 }
 
-static std::unique_ptr<server_classifier_ctx> make_ctx(llama_model * model, int32_t n_ctx, int32_t n_threads,
+static std::unique_ptr<server_classifier_ctx> make_ctx(llama_model * model, int32_t n_ctx, int32_t n_ubatch, int32_t n_threads,
                                                        int32_t n_embd, const std::vector<int32_t> & layers, int32_t exit,
                                                        int32_t n_seq = 1) {
     auto c = std::make_unique<server_classifier_ctx>();
@@ -30,12 +30,14 @@ static std::unique_ptr<server_classifier_ctx> make_ctx(llama_model * model, int3
     llama_context_params cp = llama_context_default_params();
     // embeddings mode: every token is an output, so the graph keeps all rows up to the exit layer
     // (otherwise the rows of non-output tokens are dropped before the last computed layer) and no LM
-    // head is computed; pooling needs the whole input in one ubatch
+    // head is computed. The pooling is done by the capture callback, which accumulates over ubatches,
+    // so llama.cpp's own pooling stays off and an input may span several ubatches: the compute
+    // buffer is sized by n_ubatch, not by the longest input.
     cp.embeddings        = true;
-    cp.pooling_type      = LLAMA_POOLING_TYPE_MEAN;
+    cp.pooling_type      = LLAMA_POOLING_TYPE_NONE;
     cp.n_ctx             = n_ctx;
     cp.n_batch           = n_ctx;
-    cp.n_ubatch          = n_ctx;
+    cp.n_ubatch          = std::max(1, std::min(n_ubatch, n_ctx));
     // several items share one batch, one sequence each, in one unified KV cache of n_ctx cells
     cp.n_seq_max         = n_seq;
     cp.kv_unified        = true;
@@ -51,10 +53,12 @@ static std::unique_ptr<server_classifier_ctx> make_ctx(llama_model * model, int3
     return c;
 }
 
-void server_classifier::init(llama_model * model, const std::vector<std::string> & paths, int32_t n_ctx, int32_t n_threads, bool features) {
+void server_classifier::init(llama_model * model, const std::vector<std::string> & paths, int32_t n_ctx, int32_t n_threads, bool features,
+                             int32_t n_ubatch) {
     this->model    = model;
     this->n_embd   = llama_model_n_embd(model);
     this->n_ctx    = n_ctx;
+    this->n_ubatch = n_ubatch;
     this->n_vocab  = llama_vocab_n_tokens(llama_model_get_vocab(model));
     this->n_layer_ = llama_model_n_layer(model);
     this->n_threads = n_threads;
@@ -98,10 +102,10 @@ void server_classifier::init(llama_model * model, const std::vector<std::string>
         }
     }
     for (int32_t L : layers) {
-        ctxs.push_back(make_ctx(model, n_ctx, n_threads, n_embd, {L}, L, n_seq_batch));
+        ctxs.push_back(make_ctx(model, n_ctx, n_ubatch, n_threads, n_embd, {L}, L, n_seq_batch));
     }
     if (features) {
-        feat = make_ctx(model, n_ctx, n_threads, n_embd, {}, 0);
+        feat = make_ctx(model, n_ctx, n_ubatch, n_threads, n_embd, {}, 0);
     }
 }
 
@@ -311,7 +315,7 @@ void server_classifier::add_head(const common_classifier_head & head_in) {
         have_ctx = have_ctx || c->cap.layers[0] == head.layer;
     }
     if (!have_ctx) {
-        ctxs.push_back(make_ctx(model, n_ctx, n_threads, n_embd, {head.layer}, head.layer, n_seq_batch));
+        ctxs.push_back(make_ctx(model, n_ctx, n_ubatch, n_threads, n_embd, {head.layer}, head.layer, n_seq_batch));
     }
     bool replaced = false;
     for (auto & h : heads) {

@@ -123,7 +123,7 @@ llama-server -m model.gguf --classifier topic.gguf [--classifier h2.gguf] [--fea
 
 Heads that read the same layer share one early-exit context on the loaded model.
 
-**Memory:** each distinct layer costs one context of `--classifier-ctx` tokens (default 4096), and so does `--features`. Its KV cache covers all layers, because early exit doesn't shrink it, plus a compute buffer of that size. Lower `--classifier-ctx` when inputs are short.
+**Memory:** each distinct layer costs one context of `--classifier-ctx` tokens (default 4096), and so does `--features`. Its KV cache covers all layers, because early exit doesn't shrink it. Its compute buffer is sized by `--classifier-ubatch` (default 512 tokens), not by the longest input: the pooled features are accumulated over compute steps, so an input or a batch longer than that is processed in several steps with the same answers. On Qwen3-8B at `--classifier-ctx 4096` the buffer is 341 MiB at the default against 2,726 MiB with one step per input. Lower `--classifier-ctx` when inputs are short; raise `--classifier-ubatch` only if long inputs need fewer steps and the memory is there.
 
 **`POST /classify`** with `{"input": "text"}`, a token array, or an array of either. One answer per head:
 

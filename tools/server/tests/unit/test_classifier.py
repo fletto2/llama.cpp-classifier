@@ -122,6 +122,31 @@ def test_classify_batch_chunks_and_poolings(meta, tmp_path):
             assert batch.body[k]["answers"][pooling]["noul"] == pytest.approx(noul(single, pooling), abs=1e-6)
 
 
+def test_classify_small_ubatch_matches(meta, tmp_path):
+    # the capture pools across compute steps, so a 4-token ubatch must give the default answers (mean, mean1, last),
+    # up to the float noise of batched decoding (several sequences in one large compute step differ from one-by-one by
+    # up to ~1e-4 on this tiny f32 model; with small steps the batched answers equal the single ones to 1e-8)
+    rng = np.random.default_rng(2)
+    heads = []
+    for pooling in ["mean", "mean1", "last"]:
+        heads += ["--classifier", write_head(str(tmp_path / f"{pooling}.gguf"), meta["n_embd"], 3,
+                                             rng.standard_normal(meta["n_embd"]) * 0.1, 0.0, pooling, pooling=pooling)]
+    inputs = [[int(t) for t in rng.integers(1, meta["n_vocab"], size=int(n))] for n in rng.integers(1, 30, size=12)]
+    answers = []
+    for ub in (None, "4"):
+        server.extra_args = heads + (["--classifier-ubatch", ub] if ub else [])
+        server.start()
+        batch = server.make_request("POST", "/classify", data={"input": inputs})
+        single = server.make_request("POST", "/classify", data={"input": inputs[3]})
+        assert batch.status_code == 200 and single.status_code == 200
+        answers.append((batch.body, single.body))
+        server.stop()
+    for pooling in ["mean", "mean1", "last"]:
+        for a, b in zip(answers[0][0], answers[1][0]):
+            assert a["answers"][pooling]["noul"] == pytest.approx(b["answers"][pooling]["noul"], abs=5e-4)
+        assert answers[0][1]["answers"][pooling]["noul"] == pytest.approx(answers[1][1]["answers"][pooling]["noul"], abs=5e-4)
+
+
 def test_classify_input_errors(meta, tmp_path):
     head = write_head(str(tmp_path / "zero.gguf"), meta["n_embd"], 2, np.zeros(meta["n_embd"]), 0.0)
     server.extra_args = ["--classifier", head, "--classifier-ctx", "32"]

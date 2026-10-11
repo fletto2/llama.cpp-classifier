@@ -1241,7 +1241,8 @@ private:
             try {
                 classifier = std::make_unique<server_classifier>();
                 classifier->init(model_tgt, params_base.classifier_heads, params_base.classifier_n_ctx,
-                                 params_base.cpuparams_batch.n_threads, params_base.classifier_features);
+                                 params_base.cpuparams_batch.n_threads, params_base.classifier_features,
+                                 params_base.classifier_n_ubatch);
                 SRV_INF("loaded %zu classifier head(s)%s: %s\n", classifier->heads.size(),
                         params_base.classifier_features ? ", features enabled" : "", classifier->info().dump().c_str());
             } catch (const std::exception & e) {
