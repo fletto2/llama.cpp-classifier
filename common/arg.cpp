@@ -3849,6 +3849,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--options"},
+        "serve POST /options: the summed log-probability of each of a few fixed answers after a prompt, the prompt decoded "
+        "once and shared by the answers (full depth; inputs up to --classifier-ctx tokens)",
+        [](common_params & params) {
+            params.classifier_options = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--classifier-train"},
         "serve POST /classify/train: fit a head on labelled inputs and register it live (enables --features)",
         [](common_params & params) {

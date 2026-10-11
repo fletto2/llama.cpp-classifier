@@ -3,6 +3,7 @@
 #include "../../src/llama-ext.h" // staging API: llama_set_n_layer_exit
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 // one early-exit context and the capture of its tapped layers
@@ -16,7 +17,11 @@ struct server_classifier_ctx {
 };
 
 server_classifier::server_classifier()  = default;
-server_classifier::~server_classifier() = default;
+server_classifier::~server_classifier() {
+    if (opt_ctx) {
+        llama_free(opt_ctx);
+    }
+}
 
 bool server_classifier::features_enabled() const {
     return feat != nullptr;
@@ -54,7 +59,7 @@ static std::unique_ptr<server_classifier_ctx> make_ctx(llama_model * model, int3
 }
 
 void server_classifier::init(llama_model * model, const std::vector<std::string> & paths, int32_t n_ctx, int32_t n_threads, bool features,
-                             int32_t n_ubatch) {
+                             int32_t n_ubatch, bool options) {
     this->model    = model;
     this->n_embd   = llama_model_n_embd(model);
     this->n_ctx    = n_ctx;
@@ -103,6 +108,20 @@ void server_classifier::init(llama_model * model, const std::vector<std::string>
     }
     for (int32_t L : layers) {
         ctxs.push_back(make_ctx(model, n_ctx, n_ubatch, n_threads, n_embd, {L}, L, n_seq_batch));
+    }
+    if (options) {
+        llama_context_params cp = llama_context_default_params();
+        cp.n_ctx           = n_ctx;
+        cp.n_batch         = n_ctx;
+        cp.n_ubatch        = std::max(1, std::min(n_ubatch, n_ctx));
+        cp.n_seq_max       = MAX_OPTIONS;
+        cp.kv_unified      = true;
+        cp.n_threads       = n_threads;
+        cp.n_threads_batch = n_threads;
+        opt_ctx = llama_init_from_model(model, cp);
+        if (!opt_ctx) {
+            throw std::runtime_error("options: cannot create a context");
+        }
     }
     if (features) {
         feat = make_ctx(model, n_ctx, n_ubatch, n_threads, n_embd, {}, 0, n_seq_batch);
@@ -391,6 +410,92 @@ std::vector<json> server_classifier::features_batch(const std::vector<llama_toke
         begin = end;
     }
     return out;
+}
+
+// log-softmax of one row of logits at the token t
+static double token_logprob(const float * logits, int32_t n_vocab, llama_token t) {
+    float mx = logits[0];
+    for (int32_t i = 1; i < n_vocab; i++) mx = std::max(mx, logits[i]);
+    double z = 0.0;
+    for (int32_t i = 0; i < n_vocab; i++) z += std::exp((double) logits[i] - mx);
+    return (double) logits[t] - mx - std::log(z);
+}
+
+json server_classifier::score_options(const std::vector<llama_tokens> & full, const std::vector<std::string> & names) {
+    if (!opt_ctx) {
+        throw std::invalid_argument("options are disabled, start the server with --options");
+    }
+    const size_t K = full.size();
+    if (K < 2 || (int32_t) K > MAX_OPTIONS) {
+        throw std::invalid_argument("options: give 2.." + std::to_string(MAX_OPTIONS) + " options");
+    }
+    // shared prefix: the common prefix of all prompt + option sequences, leaving every option one own token
+    size_t p = full[0].size();
+    for (size_t k = 1; k < K; k++) {
+        size_t q = 0;
+        while (q < p && q < full[k].size() && full[k][q] == full[0][q]) q++;
+        p = q;
+    }
+    for (const auto & f : full) {
+        check_tokens(f);
+        p = std::min(p, f.size() - 1);
+    }
+    if (p == 0) {
+        throw std::invalid_argument("options: the prompt is empty");
+    }
+    int64_t n_total = (int64_t) p;
+    for (const auto & f : full) n_total += (int64_t) (f.size() - p);
+    if (n_total > n_ctx) {
+        throw std::invalid_argument("options: prompt and options have " + std::to_string(n_total) + " tokens, at most " +
+                                    std::to_string(n_ctx) + " are allowed (--classifier-ctx)");
+    }
+    llama_memory_t mem = llama_get_memory(opt_ctx);
+    llama_memory_clear(mem, true);
+    // 1. the shared prefix in sequence 0, logits of its last token only
+    llama_batch b = llama_batch_init((int32_t) n_total, 0, 1);
+    for (size_t i = 0; i < p; i++) {
+        b.token[b.n_tokens] = full[0][i]; b.pos[b.n_tokens] = (llama_pos) i; b.n_seq_id[b.n_tokens] = 1;
+        b.seq_id[b.n_tokens][0] = 0; b.logits[b.n_tokens] = i + 1 == p; b.n_tokens++;
+    }
+    if (llama_decode(opt_ctx, b) != 0) { llama_batch_free(b); throw std::runtime_error("options: decode failed"); }
+    std::vector<float> last(llama_get_logits_ith(opt_ctx, (int32_t) p - 1), llama_get_logits_ith(opt_ctx, (int32_t) p - 1) + n_vocab);
+    // 2. every option's own tokens but its last, one sequence each, after copying the prefix
+    for (size_t k = 1; k < K; k++) {
+        llama_memory_seq_cp(mem, 0, (llama_seq_id) k, -1, -1);
+    }
+    b.n_tokens = 0;
+    std::vector<std::vector<int32_t>> idx(K);
+    for (size_t k = 0; k < K; k++) {
+        for (size_t i = p; i + 1 < full[k].size(); i++) {
+            idx[k].push_back(b.n_tokens);
+            b.token[b.n_tokens] = full[k][i]; b.pos[b.n_tokens] = (llama_pos) i; b.n_seq_id[b.n_tokens] = 1;
+            b.seq_id[b.n_tokens][0] = (llama_seq_id) k; b.logits[b.n_tokens] = 1; b.n_tokens++;
+        }
+    }
+    if (b.n_tokens > 0 && llama_decode(opt_ctx, b) != 0) { llama_batch_free(b); throw std::runtime_error("options: decode failed"); }
+    llama_batch_free(b);
+    // 3. summed log-probs
+    std::vector<double> lp(K, 0.0);
+    for (size_t k = 0; k < K; k++) {
+        lp[k] = token_logprob(last.data(), n_vocab, full[k][p]);
+        for (size_t j = 0; j < idx[k].size(); j++) {
+            lp[k] += token_logprob(llama_get_logits_ith(opt_ctx, idx[k][j]), n_vocab, full[k][p + 1 + j]);
+        }
+    }
+    const double mx = *std::max_element(lp.begin(), lp.end());
+    double z = 0.0;
+    for (double v : lp) z += std::exp(v - mx);
+    json opts = json::array();
+    json probs = json::object();
+    size_t best = 0;
+    for (size_t k = 0; k < K; k++) {
+        const double pk = std::exp(lp[k] - mx) / z;
+        opts.push_back({{"option", names[k]}, {"logprob", lp[k]}, {"n_tokens", full[k].size() - p}, {"probability", pk}});
+        probs[names[k]] = pk;
+        if (lp[k] > lp[best]) best = k;
+    }
+    return json {{"options", opts}, {"probabilities", probs}, {"best", names[best]}, {"confidence", std::exp(lp[best] - mx) / z},
+                 {"prompt_tokens", p}};
 }
 
 json server_classifier::info() const {

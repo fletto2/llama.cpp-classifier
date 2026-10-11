@@ -147,6 +147,32 @@ def test_classify_small_ubatch_matches(meta, tmp_path):
         assert answers[0][1]["answers"][pooling]["noul"] == pytest.approx(answers[1][1]["answers"][pooling]["noul"], abs=5e-4)
 
 
+def test_options(meta):
+    # summed log-probs of fixed answers after a prompt (checked against an offline option scorer to 1e-6 on Qwen3-1.7B)
+    server.extra_args = ["--options"]
+    server.n_slots = 1
+    server.start()
+    prompt = "Once upon a time there was a"
+    opts = ["cat", "little girl", "dog"]
+    res = server.make_request("POST", "/options", data={"prompt": prompt, "options": opts})
+    assert res.status_code == 200
+    got = {o["option"]: o for o in res.body["options"]}
+    assert set(res.body["probabilities"]) == set(opts)
+    assert sum(res.body["probabilities"].values()) == pytest.approx(1.0, abs=1e-6)
+    assert res.body["best"] == max(opts, key=lambda o: got[o]["logprob"])
+    for o in opts:
+        assert got[o]["logprob"] < 0 and got[o]["n_tokens"] >= 1
+    # errors
+    assert server.make_request("POST", "/options", data={"prompt": prompt, "options": ["only"]}).status_code == 400
+    assert server.make_request("POST", "/options", data={"prompt": prompt}).status_code == 400
+    assert server.make_request("POST", "/options", data={"prompt": prompt, "options": ["a", ""]}).status_code == 400
+
+
+def test_options_disabled():
+    server.start()
+    assert server.make_request("POST", "/options", data={"prompt": "x", "options": ["a", "b"]}).status_code != 200
+
+
 def test_classify_input_errors(meta, tmp_path):
     head = write_head(str(tmp_path / "zero.gguf"), meta["n_embd"], 2, np.zeros(meta["n_embd"]), 0.0)
     server.extra_args = ["--classifier", head, "--classifier-ctx", "32"]

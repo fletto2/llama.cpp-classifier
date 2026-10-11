@@ -1237,12 +1237,12 @@ private:
 
         vocab = llama_model_get_vocab(model_tgt);
 
-        if (!params_base.classifier_heads.empty() || params_base.classifier_features) {
+        if (!params_base.classifier_heads.empty() || params_base.classifier_features || params_base.classifier_options) {
             try {
                 classifier = std::make_unique<server_classifier>();
                 classifier->init(model_tgt, params_base.classifier_heads, params_base.classifier_n_ctx,
                                  params_base.cpuparams_batch.n_threads, params_base.classifier_features,
-                                 params_base.classifier_n_ubatch);
+                                 params_base.classifier_n_ubatch, params_base.classifier_options);
                 SRV_INF("loaded %zu classifier head(s)%s: %s\n", classifier->heads.size(),
                         params_base.classifier_features ? ", features enabled" : "", classifier->info().dump().c_str());
             } catch (const std::exception & e) {
@@ -3187,6 +3187,25 @@ private:
                                 {"features", classifier->features(task.tokens_classify, layers, poolings)},
                             };
                         }
+                        queue_results.send(std::move(res));
+                    } catch (const std::invalid_argument & e) {
+                        send_error(task.id, e.what(), ERROR_TYPE_INVALID_REQUEST);
+                    } catch (const std::exception & e) {
+                        send_error(task.id, e.what(), ERROR_TYPE_SERVER);
+                    }
+                } break;
+            case SERVER_TASK_TYPE_OPTIONS:
+                {
+                    if (!classifier || !classifier->options_enabled()) {
+                        send_error(task.id, "options are disabled, start the server with --options", ERROR_TYPE_NOT_SUPPORTED);
+                        break;
+                    }
+                    try {
+                        auto res = std::make_unique<server_task_result_json>();
+                        res->id    = task.id;
+                        res->index = task.index;
+                        res->data  = classifier->score_options(task.tokens_classify_batch, task.option_names);
+                        res->data["model"] = model_name;
                         queue_results.send(std::move(res));
                     } catch (const std::invalid_argument & e) {
                         send_error(task.id, e.what(), ERROR_TYPE_INVALID_REQUEST);
@@ -6258,6 +6277,44 @@ void server_routes::init_routes() {
     // pooled hidden states per input
     this->post_features = [input_tasks](const server_http_req & req) {
         return input_tasks(req, SERVER_TASK_TYPE_FEATURES);
+    };
+
+    // log-probs of fixed answers after a prompt: {"prompt": "...", "options": ["...", ...], "separator": " "}
+    this->post_options = [this](const server_http_req & req) {
+        auto res = create_response();
+        const json body = json::parse(req.body);
+        if (!body.contains("prompt") || !body.at("prompt").is_string() || !body.contains("options") || !body.at("options").is_array()) {
+            res->error(format_error_response("\"prompt\" (a string) and \"options\" (an array of strings) must be provided", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        const std::string prompt = body.at("prompt").get<std::string>();
+        const std::string sep    = body.value("separator", std::string(" "));
+        server_task task(SERVER_TASK_TYPE_OPTIONS);
+        for (const auto & o : body.at("options")) {
+            if (!o.is_string() || o.get<std::string>().empty()) {
+                res->error(format_error_response("every option must be a non-empty string", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+            task.option_names.push_back(o.get<std::string>());
+            task.tokens_classify_batch.push_back(common_tokenize(ctx_server.vocab, prompt + sep + o.get<std::string>(), true, true));
+        }
+        auto & rd = res->rd;
+        task.id = rd.get_new_id();
+        task.index = 0;
+        {
+            std::vector<server_task> tasks;
+            tasks.push_back(std::move(task));
+            rd.post_tasks(std::move(tasks));
+        }
+        auto all_results = rd.wait_for_all(req.should_stop);
+        if (all_results.is_terminated) {
+            return res;
+        } else if (all_results.error) {
+            res->error(all_results.error->to_json());
+            return res;
+        }
+        res->ok(all_results.results.at(0)->to_json());
+        return res;
     };
 
     // fit a head on labelled inputs and register it: {"question_id", "type", "options", "data": [{"input", "label"}],

@@ -25,13 +25,22 @@ struct server_classifier {
     server_classifier();
     ~server_classifier();
 
+    // most answers scored by one POST /options request (one sequence each)
+    static constexpr int32_t MAX_OPTIONS = 32;
+
     // load the heads and create one early-exit context per layer, plus the features context if asked for;
     // throws on error
     void init(llama_model * model, const std::vector<std::string> & paths, int32_t n_ctx, int32_t n_threads, bool features,
-              int32_t n_ubatch = 512);
+              int32_t n_ubatch = 512, bool options = false);
 
     bool enabled()          const { return !heads.empty(); }
     bool features_enabled() const;
+    bool options_enabled()  const { return opt_ctx != nullptr; }
+
+    // POST /options: full[k] = the tokens of prompt + option k (the prompt is their common prefix up to merges at the
+    // boundary). Returns per option the summed log-prob of its own tokens, their count, the softmax over the options
+    // and the best one. The shared prefix is decoded once and copied to one sequence per option.
+    json score_options(const std::vector<llama_tokens> & full, const std::vector<std::string> & names);
 
     // typed-decision answers for one input: {"<question_id>": {"type": ..., ...}, ...}
     json classify(const llama_tokens & tokens);
@@ -76,6 +85,7 @@ private:
     int32_t       n_seq_batch = 1; // inputs per batch (1 for hybrid / recurrent models)
     std::vector<std::unique_ptr<server_classifier_ctx>> ctxs;
     std::unique_ptr<server_classifier_ctx>              feat; // --features
+    llama_context *                                      opt_ctx = nullptr; // --options (full depth, logits)
 };
 
 // the answer of one head in the typed-decision shape

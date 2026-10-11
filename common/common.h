@@ -535,6 +535,7 @@ struct common_params {
     int32_t classifier_n_ctx = 4096;           // max tokens per classified input
     int32_t classifier_n_ubatch = 512;         // classifier compute ubatch (the compute buffer scales with it)
     bool    classifier_features = false;       // server: POST /features (pooled hidden states)
+    bool    classifier_options  = false;       // server: POST /options (log-probs of fixed answers after a prompt)
     bool    classifier_train    = false;       // server: POST /classify/train (implies classifier_features)
     std::string classifier_dir;                // server: where POST /classify/train saves heads ("save": true)
     bool lora_train = false;                   // server: enable POST /lora/train (LoRA training on the loaded model)

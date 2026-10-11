@@ -248,6 +248,7 @@ int llama_server(common_params & params, int argc, char ** argv, server_child & 
         routes.post_lora_adapters          = models_routes->proxy_post;
         routes.post_classify               = models_routes->proxy_post;
         routes.post_features               = models_routes->proxy_post;
+        routes.post_options                = models_routes->proxy_post;
         routes.post_classify_train         = models_routes->proxy_post;
         routes.post_lora_train             = models_routes->proxy_post;
         routes.get_lora_train              = models_routes->proxy_get;
@@ -308,6 +309,7 @@ int llama_server(common_params & params, int argc, char ** argv, server_child & 
     ctx_http.post("/classify",                 ex_wrapper(routes.post_classify));
     ctx_http.post("/v1/classify",              ex_wrapper(routes.post_classify));
     ctx_http.post("/features",                 ex_wrapper(routes.post_features));
+    ctx_http.post("/options",                  ex_wrapper(routes.post_options));
     ctx_http.post("/classify/train",           ex_wrapper(routes.post_classify_train));
     ctx_http.post("/lora/train",               ex_wrapper(routes.post_lora_train));
     ctx_http.get ("/lora/train",               ex_wrapper(routes.get_lora_train));

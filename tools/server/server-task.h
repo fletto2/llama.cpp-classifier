@@ -32,6 +32,7 @@ enum server_task_type {
     SERVER_TASK_TYPE_CLASSIFY,          // classifier heads on the loaded model
     SERVER_TASK_TYPE_FEATURES,          // pooled hidden states of chosen layers
     SERVER_TASK_TYPE_FEATURES_RAW,      // the same as float arrays (classifier training)
+    SERVER_TASK_TYPE_OPTIONS,           // log-probs of fixed answers after a prompt
     SERVER_TASK_TYPE_CLASSIFY_ADD_HEAD, // register a trained head
     SERVER_TASK_TYPE_LORA_TRAIN,        // start a LoRA training job
     SERVER_TASK_TYPE_LORA_TRAIN_STATUS, // list the training jobs
@@ -215,7 +216,8 @@ struct server_task {
 
     // used by SERVER_TASK_TYPE_CLASSIFY / FEATURES (the input) and SERVER_TASK_TYPE_LORA_TRAIN* (the request body)
     llama_tokens tokens_classify;
-    std::vector<llama_tokens> tokens_classify_batch; // SERVER_TASK_TYPE_CLASSIFY with several inputs
+    std::vector<llama_tokens> tokens_classify_batch; // SERVER_TASK_TYPE_CLASSIFY / FEATURES with several inputs; OPTIONS: prompt + each option
+    std::vector<std::string>  option_names;          // SERVER_TASK_TYPE_OPTIONS
     json         lora_train;
 
     // used by SERVER_TASK_TYPE_FEATURES*: layers (1..n_layer; FEATURES_RAW: empty = the automatic
