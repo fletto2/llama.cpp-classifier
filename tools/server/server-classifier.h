@@ -60,7 +60,7 @@ struct server_classifier {
         std::string               id;
         std::string               type;      // noul (names {"true", "false"}) or choice
         std::vector<std::string>  names;
-        std::vector<llama_tokens> descriptions;
+        std::vector<std::vector<llama_tokens>> descriptions; // per answer: one description or several example texts
     };
     std::vector<json> classify_questions(const std::vector<llama_tokens> & items, const std::vector<question> & questions,
                                          int32_t layer, common_classifier_pooling pooling, double temperature);

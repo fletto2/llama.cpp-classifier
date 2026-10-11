@@ -191,6 +191,15 @@ def test_classify_questions(meta):
         assert a["topic"]["choice"] in ("animals", "food", "sea")
         one = server.make_request("POST", "/classify", data={"input": t, "questions": q, "layer": 3}).body["answers"]
         assert one["mood"]["noul"] == pytest.approx(a["mood"]["noul"], abs=5e-3)
+    # examples: a one-text list equals the same text as a description; several texts average their vectors
+    t0 = texts[0]
+    as_desc = server.make_request("POST", "/classify", data={"input": t0, "layer": 3, "questions": q}).body["answers"]["mood"]["noul"]
+    q1 = {"mood": {"type": "noul", "true": [q["mood"]["true"]], "false": [q["mood"]["false"]]}}
+    as_list = server.make_request("POST", "/classify", data={"input": t0, "layer": 3, "questions": q1}).body["answers"]["mood"]["noul"]
+    assert as_list == pytest.approx(as_desc, abs=1e-9)
+    qe = {"mood": {"type": "noul", "true": ["they laughed and played", "a fun day with friends"], "false": ["he cried alone", "the dog died"]}}
+    ex = server.make_request("POST", "/classify", data={"input": t0, "layer": 3, "questions": qe})
+    assert ex.status_code == 200 and 0.0 <= ex.body["answers"]["mood"]["noul"] <= 1.0
     bad = server.make_request("POST", "/classify", data={"input": "x", "questions": {"m": {"type": "noul", "true": "a"}}})
     assert bad.status_code == 400
 

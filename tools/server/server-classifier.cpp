@@ -446,8 +446,13 @@ std::vector<json> server_classifier::classify_questions(const std::vector<llama_
         std::vector<std::vector<double>> P(K, std::vector<double>(n_embd));
         std::vector<double> c(n_embd, 0.0);
         for (size_t k = 0; k < K; k++) {
-            const auto & v = describe(q.descriptions[k]);
-            for (int32_t j = 0; j < n_embd; j++) { P[k][j] = v[j]; c[j] += v[j] / (double) K; }
+            // an answer's prototype: the mean of the pooled vectors of its description or examples
+            const double w = 1.0 / (double) q.descriptions[k].size();
+            for (const auto & t : q.descriptions[k]) {
+                const auto & v = describe(t);
+                for (int32_t j = 0; j < n_embd; j++) P[k][j] += w * v[j];
+            }
+            for (int32_t j = 0; j < n_embd; j++) c[j] += P[k][j] / (double) K;
         }
         for (auto & p : P) for (int32_t j = 0; j < n_embd; j++) p[j] -= c[j];
         for (size_t i = 0; i < items.size(); i++) {

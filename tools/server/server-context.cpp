@@ -3130,6 +3130,18 @@ private:
                         if (has_q) {
                             // questions in the request: answered by similarity to the answers' descriptions
                             std::vector<server_classifier::question> qs;
+                            // an answer is a description (a string) or example texts (an array of strings)
+                            auto texts = [&](const json & v) {
+                                std::vector<llama_tokens> out;
+                                if (v.is_string()) {
+                                    out.push_back(common_tokenize(vocab, v.get<std::string>(), true, true));
+                                } else if (v.is_array() && !v.empty()) {
+                                    for (const auto & e : v) out.push_back(common_tokenize(vocab, e.get<std::string>(), true, true));
+                                } else {
+                                    throw std::invalid_argument("an answer must be a description (string) or examples (non-empty array of strings)");
+                                }
+                                return out;
+                            };
                             for (const auto & [qid, q] : task.questions.at("questions").items()) {
                                 server_classifier::question one;
                                 one.id   = qid;
@@ -3139,15 +3151,15 @@ private:
                                         throw std::invalid_argument("question '" + qid + "': a noul question needs \"true\" and \"false\" descriptions");
                                     }
                                     one.names = {"true", "false"};
-                                    one.descriptions.push_back(common_tokenize(vocab, q.at("true").get<std::string>(), true, true));
-                                    one.descriptions.push_back(common_tokenize(vocab, q.at("false").get<std::string>(), true, true));
+                                    one.descriptions.push_back(texts(q.at("true")));
+                                    one.descriptions.push_back(texts(q.at("false")));
                                 } else if (one.type == "choice") {
                                     if (!q.contains("options") || !q.at("options").is_object() || q.at("options").size() < 2) {
                                         throw std::invalid_argument("question '" + qid + "': a choice question needs \"options\": {name: description, ...} with 2 or more");
                                     }
                                     for (const auto & [name, desc] : q.at("options").items()) {
                                         one.names.push_back(name);
-                                        one.descriptions.push_back(common_tokenize(vocab, desc.get<std::string>(), true, true));
+                                        one.descriptions.push_back(texts(desc));
                                     }
                                 } else {
                                     throw std::invalid_argument("question '" + qid + "': type must be noul or choice");
