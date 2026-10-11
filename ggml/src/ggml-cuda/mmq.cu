@@ -85,6 +85,15 @@ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, con
         case GGML_TYPE_TQK7:
             mul_mat_q_case<GGML_TYPE_TQK7>(ctx, args, stream);
             break;
+        case GGML_TYPE_TQP5:
+            mul_mat_q_case<GGML_TYPE_TQP5>(ctx, args, stream);
+            break;
+        case GGML_TYPE_TQP6:
+            mul_mat_q_case<GGML_TYPE_TQP6>(ctx, args, stream);
+            break;
+        case GGML_TYPE_TQP7:
+            mul_mat_q_case<GGML_TYPE_TQP7>(ctx, args, stream);
+            break;
 // -----------------------------------------------------------------------
         case GGML_TYPE_MXFP4:
             // src1 at Q4 uses the native FP4 instructions, which are Blackwell-only
@@ -443,6 +452,9 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
         case GGML_TYPE_TQ2_T:
         case GGML_TYPE_TQK6:
         case GGML_TYPE_TQK7:
+        case GGML_TYPE_TQP5:
+        case GGML_TYPE_TQP6:
+        case GGML_TYPE_TQP7:
             // Trellis types: decoded to int8 (per-16 scales) in the tile loader.
             // GGML_CUDA_TQ_MMQ=0 falls back to dequant + BLAS (A/B testing).
             {

@@ -1758,8 +1758,8 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 
 // ---------------------------------------------------------------------------------------------
 
-// Trellis types (TQ2_T, TQK6, TQK7): a 128-weight block is TQ_LANES lanes of 16 weights. Each lane
-// decodes its 4 trellis steps and requantizes them to int8 with one scale per 16 weights, filling
+// Trellis types (TQ2_T, TQK6, TQK7, TQP5/6/7): a 128-weight block is TQ_LANES lanes of 16 weights.
+// Each lane decodes its 4 (TQP: 8) trellis steps and requantizes them to int8 with one scale per 16 weights, filling
 // the Q8_0_16 tile layout (as IQ2_XS). One MMQ_ITER_K slice of a row is 2 blocks = 16 lanes.
 template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_tq(
         const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {

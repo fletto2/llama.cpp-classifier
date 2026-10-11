@@ -103,6 +103,9 @@ static mmq_q8_1_ds_layout mmq_get_q8_1_ds_layout(const ggml_type type_x) {
         case GGML_TYPE_TQ2_T:
         case GGML_TYPE_TQK6:
         case GGML_TYPE_TQK7:
+        case GGML_TYPE_TQP5:
+        case GGML_TYPE_TQP6:
+        case GGML_TYPE_TQP7:
             return MMQ_Q8_1_DS_LAYOUT_D4;
         default:
             GGML_ABORT("fatal error");
@@ -431,6 +434,9 @@ static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml
         case GGML_TYPE_TQ2_T:   return MMQ_DP4A_TXS_Q8_0_16;
         case GGML_TYPE_TQK6:    return MMQ_DP4A_TXS_Q8_0_16;
         case GGML_TYPE_TQK7:    return MMQ_DP4A_TXS_Q8_0_16;
+        case GGML_TYPE_TQP5:    return MMQ_DP4A_TXS_Q8_0_16;
+        case GGML_TYPE_TQP6:    return MMQ_DP4A_TXS_Q8_0_16;
+        case GGML_TYPE_TQP7:    return MMQ_DP4A_TXS_Q8_0_16;
         default:                return tile_x_sizes{0, 0, 0};
     }
 }
@@ -735,6 +741,9 @@ static constexpr __device__ ggml_cuda_mmq_util_funcs ggml_cuda_mmq_get_util_func
             case GGML_TYPE_TQ2_T:
             case GGML_TYPE_TQK6:
             case GGML_TYPE_TQK7:
+            case GGML_TYPE_TQP5:
+            case GGML_TYPE_TQP6:
+            case GGML_TYPE_TQP7:
                 return ggml_cuda_mmq_util_funcs(
                     VDR_IQ2_XS_Q8_1_MMQ,
                     ggml_cuda_mmq_load_tiles_tq<type, J, fallback>,
@@ -925,6 +934,9 @@ static constexpr __device__ ggml_cuda_mmq_util_funcs ggml_cuda_mmq_get_util_func
         case GGML_TYPE_TQ2_T:
         case GGML_TYPE_TQK6:
         case GGML_TYPE_TQK7:
+        case GGML_TYPE_TQP5:
+        case GGML_TYPE_TQP6:
+        case GGML_TYPE_TQP7:
             return ggml_cuda_mmq_util_funcs(
                 -1,
                 ggml_cuda_mmq_load_tiles_tq<type, J, fallback>,
@@ -1695,6 +1707,9 @@ extern DECL_MMQ_CASE(GGML_TYPE_IQ4_XS);
 extern DECL_MMQ_CASE(GGML_TYPE_TQ2_T);
 extern DECL_MMQ_CASE(GGML_TYPE_TQK6);
 extern DECL_MMQ_CASE(GGML_TYPE_TQK7);
+extern DECL_MMQ_CASE(GGML_TYPE_TQP5);
+extern DECL_MMQ_CASE(GGML_TYPE_TQP6);
+extern DECL_MMQ_CASE(GGML_TYPE_TQP7);
 // -----------------------------------------
 extern DECL_MMQ_CASE(GGML_TYPE_MXFP4);
 extern DECL_MMQ_CASE(GGML_TYPE_NVFP4);
