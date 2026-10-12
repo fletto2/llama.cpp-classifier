@@ -3268,7 +3268,20 @@ private:
                                 throw std::invalid_argument("unknown pooling '" + pname + "' (mean, mean1, last)");
                             }
                             const int32_t layer = task.questions.value("layer", (2 * classifier->n_layer() + 2) / 3);
-                            qa = classifier->classify_questions(items, qs, layer, pool, task.questions.value("temperature", 0.05));
+                            // "unlabeled": texts from the inputs' population, or "inputs" to use the request's own inputs
+                            std::vector<llama_tokens> unl;
+                            bool unl_inputs = false;
+                            if (task.questions.contains("unlabeled")) {
+                                const json & ul = task.questions.at("unlabeled");
+                                if (ul.is_string() && ul.get<std::string>() == "inputs") {
+                                    unl_inputs = true;
+                                } else if (ul.is_array()) {
+                                    for (const auto & e : ul) unl.push_back(common_tokenize(vocab, e.get<std::string>(), true, true));
+                                } else {
+                                    throw std::invalid_argument("\"unlabeled\" must be an array of texts or \"inputs\"");
+                                }
+                            }
+                            qa = classifier->classify_questions(items, qs, layer, pool, task.questions.value("temperature", 0.05), unl, unl_inputs);
                         }
                         std::vector<json> ha(items.size(), json::object());
                         if (classifier->enabled() && !task.questions.value("questions_only", false)) {
@@ -6335,12 +6348,12 @@ void server_routes::init_routes() {
             res->error(format_error_response("\"input\" must be provided", ERROR_TYPE_INVALID_REQUEST));
             return res;
         }
-        // /classify: "questions" answered by similarity instead of (or besides) trained heads, with "layer",
+        // /classify: "questions" answered by similarity instead of (or besides) trained heads, with "layer", "unlabeled",
         // "pooling", "temperature" and "questions_only"
         json qjson;
         if (type == SERVER_TASK_TYPE_CLASSIFY && body.contains("questions")) {
             qjson = json::object();
-            for (const char * k : {"questions", "layer", "pooling", "temperature", "questions_only"}) {
+            for (const char * k : {"questions", "layer", "pooling", "temperature", "questions_only", "unlabeled"}) {
                 if (body.contains(k)) qjson[k] = body.at(k);
             }
         }

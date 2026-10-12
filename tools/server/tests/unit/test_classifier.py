@@ -204,6 +204,30 @@ def test_classify_questions(meta):
     assert bad.status_code == 400
 
 
+def test_classify_questions_unlabeled(meta):
+    # "unlabeled": the top principal direction of texts from the inputs' population is projected out before the cosine
+    server.extra_args = ["--features"]
+    server.start()
+    q = {"mood": {"type": "noul", "true": "a happy story about friends", "false": "a sad story about loss"}}
+    texts = ["The little cat played with the dog in the park.", "She baked bread for her friends.", "The boat sailed away.",
+             "He lost his keys and cried."]
+    res = server.make_request("POST", "/classify", data={"input": texts, "questions": q, "layer": 3, "unlabeled": "inputs"})
+    assert res.status_code == 200 and len(res.body) == len(texts)
+    for r in res.body:
+        a = r["answers"]["mood"]
+        assert a["unlabeled"] == len(texts) and 0.0 <= a["noul"] <= 1.0
+        assert a["similarity"]["true"] == pytest.approx(-a["similarity"]["false"], abs=1e-9)
+    res = server.make_request("POST", "/classify", data={"input": texts[0], "questions": q, "layer": 3, "unlabeled": texts})
+    assert res.status_code == 200 and res.body["answers"]["mood"]["unlabeled"] == len(texts)
+    # the two descriptions as the population: their top direction is the prototype difference itself, so nothing is left
+    res = server.make_request("POST", "/classify", data={"input": texts[0], "questions": q, "layer": 3,
+                                                         "unlabeled": [q["mood"]["true"], q["mood"]["false"]]})
+    assert res.body["answers"]["mood"]["noul"] == pytest.approx(0.5, abs=1e-6)
+    # errors
+    assert server.make_request("POST", "/classify", data={"input": "x", "questions": q, "unlabeled": ["one"]}).status_code == 400
+    assert server.make_request("POST", "/classify", data={"input": "x", "questions": q, "unlabeled": 5}).status_code == 400
+
+
 def test_classify_questions_need_features():
     server.start()
     res = server.make_request("POST", "/classify", data={"input": "x", "questions": {"m": {"type": "noul", "true": "a", "false": "b"}}})

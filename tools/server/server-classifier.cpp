@@ -446,7 +446,8 @@ std::vector<json> server_classifier::features_batch(const std::vector<llama_toke
 }
 
 std::vector<json> server_classifier::classify_questions(const std::vector<llama_tokens> & items, const std::vector<question> & questions,
-                                                      int32_t layer, common_classifier_pooling pooling, double temperature) {
+                                                      int32_t layer, common_classifier_pooling pooling, double temperature,
+                                                      const std::vector<llama_tokens> & unlabeled, bool unlabeled_inputs) {
     if (!feat) {
         throw std::invalid_argument("questions in the request need the features context, start the server with --features");
     }
@@ -473,6 +474,54 @@ std::vector<json> server_classifier::classify_questions(const std::vector<llama_
         }
         return it->second;
     };
+    // the top principal direction of the unlabeled population (power iteration on the centred pooled vectors)
+    std::vector<double> u;
+    size_t n_unlabeled = 0;
+    if (unlabeled_inputs || !unlabeled.empty()) {
+        std::vector<std::vector<double>> U;
+        if (unlabeled_inputs) {
+            for (const auto & f : fx) {
+                const std::vector<float> x = f[std::to_string(layer)][pname].get<std::vector<float>>();
+                U.emplace_back(x.begin(), x.end());
+            }
+        } else {
+            for (const auto & t : unlabeled) {
+                const auto & v = describe(t);
+                U.emplace_back(v.begin(), v.end());
+            }
+        }
+        n_unlabeled = U.size();
+        if (n_unlabeled < 2) {
+            throw std::invalid_argument("questions: \"unlabeled\" needs 2 or more texts (50-100 work well)");
+        }
+        std::vector<double> mean(n_embd, 0.0);
+        for (const auto & r : U) for (int32_t j = 0; j < n_embd; j++) mean[j] += r[j] / (double) n_unlabeled;
+        for (auto & r : U) for (int32_t j = 0; j < n_embd; j++) r[j] -= mean[j];
+        u.assign(n_embd, 0.0);
+        for (int32_t j = 0; j < n_embd; j++) u[j] = 1.0 + 1e-3 * (double) (j % 7);   // deterministic start
+        for (int it = 0; it < 100; it++) {
+            std::vector<double> nu(n_embd, 0.0);
+            for (const auto & r : U) {
+                double d = 0.0;
+                for (int32_t j = 0; j < n_embd; j++) d += r[j] * u[j];
+                for (int32_t j = 0; j < n_embd; j++) nu[j] += d * r[j];
+            }
+            double nn = 0.0;
+            for (double v : nu) nn += v * v;
+            nn = std::sqrt(nn);
+            if (nn == 0.0) { u.clear(); break; }
+            double delta = 0.0;
+            for (int32_t j = 0; j < n_embd; j++) { nu[j] /= nn; delta += std::fabs(nu[j] - u[j]); }
+            u.swap(nu);
+            if (delta < 1e-9) break;
+        }
+    }
+    auto drop_u = [&](std::vector<double> & v) {
+        if (u.empty()) return;
+        double d = 0.0;
+        for (int32_t j = 0; j < n_embd; j++) d += v[j] * u[j];
+        for (int32_t j = 0; j < n_embd; j++) v[j] -= d * u[j];
+    };
     std::vector<json> out(items.size(), json::object());
     for (const auto & q : questions) {
         const size_t K = q.descriptions.size();
@@ -487,12 +536,22 @@ std::vector<json> server_classifier::classify_questions(const std::vector<llama_
             }
             for (int32_t j = 0; j < n_embd; j++) c[j] += P[k][j] / (double) K;
         }
-        for (auto & p : P) for (int32_t j = 0; j < n_embd; j++) p[j] -= c[j];
+        for (auto & p : P) {
+            for (int32_t j = 0; j < n_embd; j++) p[j] -= c[j];
+            double n0 = 0.0, n1 = 0.0;
+            for (double v : p) n0 += v * v;
+            drop_u(p);
+            for (double v : p) n1 += v * v;
+            // a prototype that lay along the removed direction is gone: zero it rather than normalise rounding noise
+            if (n1 <= 1e-12 * n0) std::fill(p.begin(), p.end(), 0.0);
+        }
         for (size_t i = 0; i < items.size(); i++) {
             const std::vector<float> x = fx[i][std::to_string(layer)][pname].get<std::vector<float>>();
             std::vector<double> xc(n_embd);
+            for (int32_t j = 0; j < n_embd; j++) xc[j] = x[j] - c[j];
+            drop_u(xc);
             double xn = 0.0;
-            for (int32_t j = 0; j < n_embd; j++) { xc[j] = x[j] - c[j]; xn += xc[j] * xc[j]; }
+            for (int32_t j = 0; j < n_embd; j++) xn += xc[j] * xc[j];
             xn = std::sqrt(xn) + 1e-12;
             std::vector<double> cs(K);
             for (size_t k = 0; k < K; k++) {
@@ -518,6 +577,7 @@ std::vector<json> server_classifier::classify_questions(const std::vector<llama_
                      {"probabilities", probs}, {"similarity", sims}};
             }
             a["method"] = "similarity";
+            if (!u.empty()) a["unlabeled"] = n_unlabeled;
             out[i][q.id] = a;
         }
     }

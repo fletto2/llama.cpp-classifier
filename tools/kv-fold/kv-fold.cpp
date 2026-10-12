@@ -103,7 +103,9 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    // refuse a model that already has a fold: its Qcur / Kcur would be calibrated before the old fold
+    // refuse a model that already has a fold: its Qcur / Kcur would be calibrated before the old fold;
+    // note the layers with a separate or fused key projection (llama.cpp loads the fold only for those)
+    std::map<int, bool> has_wk;
     {
         gguf_init_params gp = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
         gguf_context * g = gguf_init_from_file(fmodel.c_str(), gp);
@@ -113,6 +115,11 @@ int main(int argc, char ** argv) {
             if (strstr(n, ".attn_k_fold.") || strstr(n, ".attn_k_shift.")) {
                 fprintf(stderr, "%s already has a KV-cache fold (%s); calibrate the original model\n", fmodel.c_str(), n);
                 return 1;
+            }
+            int il = -1;
+            char rest[64];
+            if (sscanf(n, "blk.%d.%63s", &il, rest) == 2 && (!strcmp(rest, "attn_k.weight") || !strcmp(rest, "attn_qkv.weight"))) {
+                has_wk[il] = true;
             }
         }
         gguf_free(g);
@@ -156,7 +163,7 @@ int main(int argc, char ** argv) {
             return 1;
         }
         for (auto & [il, kv] : st.kbuf) {
-            if (!st.qbuf.count(il)) continue;
+            if (!st.qbuf.count(il) || !has_wk.count(il)) continue;   // e.g. MLA layers: no fold
             const auto ks = st.kshape[il], qs = st.qshape[il];
             const int64_t hd = ks[0], nkh = ks[1], T = ks[2], nh = qs[1];
             if (qs[0] != hd || qs[2] != T || nh % nkh) continue;

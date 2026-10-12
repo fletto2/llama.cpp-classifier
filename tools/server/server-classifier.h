@@ -62,8 +62,12 @@ struct server_classifier {
         std::vector<std::string>  names;
         std::vector<std::vector<llama_tokens>> descriptions; // per answer: one description or several example texts
     };
+    // unlabeled: texts from the same population as the inputs (or, with unlabeled_inputs, the inputs themselves); their
+    // top principal direction is projected out of the inputs and the prototypes before the cosine (research/ZEROSHOT.md:
+    // +0.02-0.05 AUC with 50-100 texts; the direction must come from the task's own texts, not from other text)
     std::vector<json> classify_questions(const std::vector<llama_tokens> & items, const std::vector<question> & questions,
-                                         int32_t layer, common_classifier_pooling pooling, double temperature);
+                                         int32_t layer, common_classifier_pooling pooling, double temperature,
+                                         const std::vector<llama_tokens> & unlabeled = {}, bool unlabeled_inputs = false);
 
     // pooled residuals for several inputs, decoded in one batch when they fit together (as classify_batch)
     std::vector<json> features_batch(const std::vector<llama_tokens> & items, const std::vector<int32_t> & layers,
