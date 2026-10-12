@@ -6385,8 +6385,9 @@ void server_routes::init_routes() {
             }
             bidirectional = att == "bidirectional";
         }
-        // "template": "echo" or "prompteol" (or "none") for /features and /classify questions
-        std::string tmpl;
+        // "template": "echo" or "prompteol" (or "none") for /features and /classify questions; questions default to
+        // echo (on the jev579 set it beat the plain text clearly, research/ZEROSHOT.md), /features to none
+        std::string tmpl = (type == SERVER_TASK_TYPE_CLASSIFY && body.contains("questions")) ? "echo" : "";
         if (body.contains("template")) {
             tmpl = body.at("template").is_string() ? body.at("template").get<std::string>() : "?";
             if (tmpl != "none" && tmpl != "echo" && tmpl != "prompteol") {

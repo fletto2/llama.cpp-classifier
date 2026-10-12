@@ -275,6 +275,11 @@ def test_features_templates(meta):
     q = {"mood": {"type": "noul", "true": "a happy story", "false": "a sad story"}}
     res = server.make_request("POST", "/classify", data={"input": t, "questions": q, "layer": 3, "template": "echo"})
     assert res.status_code == 200 and 0.0 <= res.body["answers"]["mood"]["noul"] <= 1.0
+    # questions default to echo
+    d = server.make_request("POST", "/classify", data={"input": t, "questions": q, "layer": 3}).body["answers"]["mood"]["noul"]
+    e = server.make_request("POST", "/classify", data={"input": t, "questions": q, "layer": 3, "template": "echo"}).body["answers"]["mood"]["noul"]
+    n = server.make_request("POST", "/classify", data={"input": t, "questions": q, "layer": 3, "template": "none"}).body["answers"]["mood"]["noul"]
+    assert d == pytest.approx(e, abs=1e-9) and abs(d - n) > 1e-6
     assert server.make_request("POST", "/features", data={**body, "template": "haiku"}).status_code == 400
     assert server.make_request("POST", "/features", data={"input": t, "layers": 3, "pooling": "span", "template": "echo"}).status_code != 200
 

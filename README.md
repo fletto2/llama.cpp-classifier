@@ -136,13 +136,46 @@ An array of inputs returns an array of these objects, in input order. The inputs
 
 **Span pooling** (a term in the request): a head with pooling `span` reads the mean over the tokens of a term in the input, widened by `classifier.span_window` tokens on each side (default 2), instead of the whole input: for questions about one mention (how central a name is to an article) that a whole-input mean washes out. `/classify` takes `"term"`, one string for every input or one per input; the term is found case-insensitively in the decoded input, and a span head answers with `span_tokens` (0 = the term was not found and the head used the `mean1` pooling instead). Train such heads with `llama-classifier train` on JSONL items that carry `"term"` (`--pooling span`, `--span-window N`, or `auto`, which then also tries `span`). Heads with other poolings answer in the same request, so one pass gives a whole-article head (e.g. sentiment) and a mention head (e.g. relevance). Live training takes them too: `"term"` per `data` item, `"pooling": "span"` (or `auto`, which adds `span` when items have terms) and `"span_window"`.
 
-**Questions in the request** (`--features`): `/classify` also takes `"questions"`, answered without a trained head. Each question is `{"type": "noul", "true": "<description>", "false": "<description>"}` or `{"type": "choice", "options": {"<name>": "<description>", ...}}`. An answer may also be a list of example texts instead of one description; its prototype is then the mean of their vectors (few-shot, still without fitting anything). The input and every description are pooled at one layer (`"layer"`, default two thirds of the depth; `"pooling"`, default `mean1`), the vectors are centred on the mean of the question's descriptions, and the answer is a softmax over the cosine similarities (`"temperature"`, default 0.05); each answer carries the raw `similarity` and `"method": "similarity"`. Description vectors are cached. Loaded heads answer in the same response unless `"questions_only": true`. This uses the classifier's own contexts, not the generation slots, so it does not touch their KV cache.
+**Questions in the request** (`--features`): `/classify` answers questions given in the request, with no trained head. The input and the answers are pooled at one layer and compared by cosine similarity. It runs in the classifier's own contexts and does not touch the generation slots.
 
-`"unlabeled"` (a list of texts, or `"inputs"` to use the request's own inputs) gives unlabeled texts from the same population as the inputs; their top principal direction, which the pooled vectors share and which carries little of any one decision, is projected out of the inputs and the prototypes before the cosine, and each answer reports how many texts it used. 50–100 texts are enough. On a hard editorial decision (579 annotations, Qwen3-8B, 20 examples per answer) it raised AUC from 0.815 to 0.842, and from 0.739 to 0.791 within length quintiles; the direction must come from the task's own texts (one estimated from unrelated text did nothing). With a few hundred labelled items a trained head is still better (0.917).
+A question is either:
+- `{"type": "noul", "true": <answer>, "false": <answer>}`
+- `{"type": "choice", "options": {"<name>": <answer>, ...}}`
 
-`"attention": "bidirectional"` (on `/features` and on `/classify` questions; default `"causal"`) runs the features context without the causal mask for that request, so every token sees the whole input, encoder-style, on the already loaded model. It is a convenience: the model was trained causally, and published measurements on other decoders mostly show untrained bidirectional attention hurting (Mistral is the exception), so check it on your own data. Each input must fit in one compute step (`--classifier-ubatch`). Trained heads always run causally, as they were fitted.
+An answer is a description (a string) or example texts (an array of strings; their pooled vectors are averaged). Examples work much better than descriptions on fine decisions.
 
-`"template"` (same endpoints): `"echo"` writes the input twice (`Rewrite the following paragraph: <text>\nThe rewritten paragraph: <text>`) and `mean` pools only the second copy, whose tokens have already seen the whole text; `"prompteol"` wraps it as `This sentence: "<text>" means in one word: "`, where `last` pools the final token and `mean` the text. Both are training-free ways to give a causal model's features the whole input; in published measurements PromptEOL's last token did best for classification and echo for similarity, at the cost of a longer input (echo doubles it). Span pooling cannot be combined with a template. With `"unlabeled": "inputs"`, all inputs of the request form the population, also when a long list is processed in several parts.
+```json
+{"input": ["text 1", "text 2"],
+ "questions": {"keep": {"type": "noul",
+                        "true":  ["example kept 1", "example kept 2"],
+                        "false": ["example dropped 1", "example dropped 2"]}},
+ "questions_only": true}
+```
+
+Each answer has `noul` (or `choice` and `probabilities`), the raw `similarity` per answer and `"method": "similarity"`.
+
+Request fields:
+
+| field | values | default | what it does |
+|---|---|---|---|
+| `layer` | 1..n_layer | 2/3 of the depth | the layer read |
+| `pooling` | `mean1`, `mean`, `last` | `mean1` | how the tokens are pooled (`mean1` skips the first token) |
+| `template` | `echo`, `prompteol`, `none` | `echo` | how the text is presented, see below |
+| `unlabeled` | array of texts, or `"inputs"` | none | removes the main shared direction, see below |
+| `attention` | `causal`, `bidirectional` | `causal` | attention mask, see below |
+| `temperature` | > 0 | 0.05 | softmax over the similarities |
+| `questions_only` | bool | false | skip loaded heads |
+
+Templates:
+- `echo`: the model reads `Rewrite the following paragraph: <text>\nThe rewritten paragraph: <text>` and the mean is taken over the second copy only. Every token there has already seen the whole text. Costs twice the tokens.
+- `prompteol`: the model reads `This sentence: "<text>" means in one word: "`. With `"pooling": "last"` the final token is read, with `mean` the text.
+- `none`: the text as is.
+
+`unlabeled`: give 50–100 texts of the same kind as the inputs, or `"inputs"` to use all inputs of the request. Their top principal direction is removed from inputs and answers before the cosine. Texts of another kind do not work.
+
+`attention: "bidirectional"`: every token sees the whole input, as in an encoder. The model was trained causally, so this usually costs some accuracy; it is there to try. Each input must fit in `--classifier-ubatch` tokens. Trained heads always run causally.
+
+`/features` takes `template` and `attention` too (default `none` and `causal`). Span pooling cannot be combined with a template.
 
 **`POST /options`** (`--options`): the model's own choice among a few fixed answers, with no head and no training. The body: `prompt` (a string), `options` (2–32 strings), `separator` (default a space). Each option is scored by the summed log-probability of its tokens after the prompt (the same scoring as an option log-prob multiple-choice test); the prompt is decoded once and shared by the options, each option in its own sequence. The response: per option `logprob`, `n_tokens` and `probability` (softmax over the options), plus `best`, `confidence` and `prompt_tokens`. It runs the full model depth in its own context of `--classifier-ctx` tokens, separate from the generation slots.
 
