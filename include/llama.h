@@ -600,6 +600,9 @@ extern "C" {
     LLAMA_API int32_t llama_model_n_embd       (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_embd_inp   (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_embd_out   (const struct llama_model * model);
+    // width of the MTP hidden state rows (llama_get_embeddings_nextn_ith, MTP draft input); equals
+    // llama_model_n_embd_out except for hyper-connection models, whose MTP head reads hc * n_embd
+    LLAMA_API int32_t llama_model_n_embd_nextn (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_layer      (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_layer_nextn(const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_head       (const struct llama_model * model);

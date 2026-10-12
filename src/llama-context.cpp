@@ -1122,7 +1122,7 @@ float * llama_context::get_embeddings_nextn_ith(int32_t i) {
             throw std::runtime_error("no nextn embeddings");
         }
 
-        const uint32_t n_embd = model.hparams.n_embd_out();
+        const uint32_t n_embd = model.hparams.n_embd_nextn();
 
         if (!cparams.embeddings_nextn_masked) {
             // unmasked: nextn rows are stored densely, indexed by raw token position.
@@ -1758,7 +1758,7 @@ int llama_context::encode(const llama_batch_ext & batch_inp) {
         ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
         GGML_ASSERT(backend_h != nullptr);
 
-        const uint32_t n_embd = hparams.n_embd_out();
+        const uint32_t n_embd = hparams.n_embd_nextn();
         GGML_ASSERT(n_tokens*n_embd <= (int64_t) embd_nextn.size);
         ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn.data, 0, n_tokens*n_embd*sizeof(float));
     }
@@ -2158,7 +2158,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
                 GGML_ASSERT(backend_h != nullptr);
 
-                const uint32_t n_embd  = hparams.n_embd_out();
+                const uint32_t n_embd  = hparams.n_embd_nextn();
                 float * embd_nextn_out = embd_nextn.data + offset*n_embd;
 
                 GGML_ASSERT((offset + n_rows)*n_embd <= (int64_t) embd_nextn.size);
@@ -2258,6 +2258,7 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     const auto n_vocab    = vocab.n_tokens();
     const auto n_embd     = hparams.n_embd;
     const auto n_embd_out = hparams.n_embd_out();
+    const auto n_embd_nextn = hparams.n_embd_nextn();
 
     bool has_logits     = true;
     bool has_embd       = cparams.embeddings;
@@ -2275,12 +2276,12 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     logits.size     = has_logits     ? n_vocab*n_outputs_max     : 0;
     embd.size       = has_embd       ? n_embd_out*n_outputs_max  : 0;
-    embd_nextn.size = has_embd_nextn ? n_embd_out*n_outputs_max  : 0;
+    embd_nextn.size = has_embd_nextn ? n_embd_nextn*n_outputs_max  : 0;
 
     if (has_embd_nextn && !cparams.embeddings_nextn_masked) {
         // unmasked: nextn row exists for every token in the batch, not just
         // those flagged via batch.logits[i] -> size by token count instead.
-        embd_nextn.size = (size_t) n_embd_out * n_batch;
+        embd_nextn.size = (size_t) n_embd_nextn * n_batch;
     }
 
     for (bool enabled : cparams.embeddings_layer_inp) {
@@ -2447,6 +2448,7 @@ void llama_context::output_reorder() {
     const uint64_t n_vocab     = model.vocab.n_tokens();
     const uint64_t n_embd      = model.hparams.n_embd;
     const uint64_t n_embd_out  = model.hparams.n_embd_out();
+    const uint64_t n_embd_nextn = model.hparams.n_embd_nextn();
 
     for (size_t s = 0; s < output_swaps.size(); ++s) {
         const uint64_t i0 = output_swaps[s].i0;
@@ -2465,8 +2467,8 @@ void llama_context::output_reorder() {
         }
 
         if (embd_nextn.size > 0 && cparams.embeddings_nextn_masked) {
-            for (uint64_t k = 0; k < n_embd_out; k++) {
-                std::swap(embd_nextn.data[i0*n_embd_out + k], embd_nextn.data[i1*n_embd_out + k]);
+            for (uint64_t k = 0; k < n_embd_nextn; k++) {
+                std::swap(embd_nextn.data[i0*n_embd_nextn + k], embd_nextn.data[i1*n_embd_nextn + k]);
             }
         }
 
@@ -2507,8 +2509,8 @@ void llama_context::output_reorder() {
             const int32_t j = embd_batch_idxs[i];
             GGML_ASSERT(j >= 0 && (size_t) j < embd_batch_idxs.size());
             if (embd_nextn.has_data() && !cparams.embeddings_nextn_masked) {
-                for (size_t k = 0; k < n_embd_out; ++k) {
-                    std::swap(embd_nextn.data[i*n_embd_out + k], embd_nextn.data[j*n_embd_out + k]);
+                for (size_t k = 0; k < n_embd_nextn; ++k) {
+                    std::swap(embd_nextn.data[i*n_embd_nextn + k], embd_nextn.data[j*n_embd_nextn + k]);
                 }
             }
             for (auto & layer : embd_layer_inp) {
