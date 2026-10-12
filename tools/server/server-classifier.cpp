@@ -143,6 +143,45 @@ void server_classifier::check_tokens(const llama_tokens & tokens) const {
     }
 }
 
+llama_tokens server_classifier::apply_template(const llama_tokens & tokens, int64_t & text_begin, int64_t & text_end) const {
+    if (tmpl.empty() || tmpl == "none") {
+        text_begin = 0;
+        text_end   = (int64_t) tokens.size();
+        return tokens;
+    }
+    const llama_vocab * vocab = llama_model_get_vocab(model);
+    auto tok = [&](const char * s) { return common_tokenize(vocab, s, false, false); };
+    // the input's own leading BOS (if the tokenizer added one) stays first; the template goes after it
+    llama_tokens out;
+    size_t skip = 0;
+    if (!tokens.empty() && llama_vocab_get_add_bos(vocab) && tokens[0] == llama_vocab_bos(vocab)) {
+        out.push_back(tokens[0]);
+        skip = 1;
+    }
+    const llama_tokens text(tokens.begin() + skip, tokens.end());
+    auto add = [&](const llama_tokens & t) { out.insert(out.end(), t.begin(), t.end()); };
+    if (tmpl == "echo") {
+        add(tok("Rewrite the following paragraph: "));
+        add(text);
+        add(tok("\nThe rewritten paragraph: "));
+        text_begin = (int64_t) out.size();
+        add(text);
+        text_end = (int64_t) out.size();
+    } else if (tmpl == "prompteol") {
+        add(tok("This sentence: \""));
+        text_begin = (int64_t) out.size();
+        add(text);
+        text_end = (int64_t) out.size();
+        add(tok("\" means in one word: \""));
+    } else {
+        throw std::invalid_argument("unknown template '" + tmpl + "' (echo, prompteol)");
+    }
+    if (text_end <= text_begin) {
+        throw std::invalid_argument("template: the input has no text tokens");
+    }
+    return out;
+}
+
 void server_classifier::decode(server_classifier_ctx & c, const llama_tokens & tokens, bool keep_rows) {
     c.cap.reset();
     c.cap.keep_rows = keep_rows || std::any_of(heads.begin(), heads.end(), [](const common_classifier_head & h) {
@@ -340,6 +379,27 @@ std::vector<float> server_classifier::features_raw(const llama_tokens & tokens, 
     // compute only as deep as the deepest requested layer (the memory is cleared for every input anyway)
     llama_set_n_layer_exit(feat->ctx, *std::max_element(layers.begin(), layers.end()));
     const bool span = std::find(poolings.begin(), poolings.end(), COMMON_CLASSIFIER_POOL_SPAN) != poolings.end();
+    if (!tmpl.empty() && tmpl != "none") {
+        if (span) {
+            throw std::invalid_argument("features: span pooling cannot be combined with a template");
+        }
+        int64_t tb = 0, te = 0;
+        const llama_tokens t2 = apply_template(tokens, tb, te);
+        decode(*feat, t2, true);
+        std::vector<float> out, x;
+        for (int32_t L : layers) {
+            for (auto pool : poolings) {
+                // last: the final token of the templated input; mean / mean1: the mean over the text range
+                if (pool == COMMON_CLASSIFIER_POOL_LAST) {
+                    feat->cap.get_range(L, pool, 0, (int64_t) t2.size(), x);
+                } else {
+                    feat->cap.get_range(L, COMMON_CLASSIFIER_POOL_MEAN, tb, te, x);
+                }
+                out.insert(out.end(), x.begin(), x.end());
+            }
+        }
+        return out;
+    }
     decode(*feat, tokens, span);
     std::vector<int32_t> pos;
     if (span && !term.empty()) {
@@ -411,17 +471,29 @@ json server_classifier::features(const llama_tokens & tokens, const std::vector<
     return out;
 }
 
-std::vector<json> server_classifier::features_batch(const std::vector<llama_tokens> & items, const std::vector<int32_t> & layers,
+std::vector<json> server_classifier::features_batch(const std::vector<llama_tokens> & items_in, const std::vector<int32_t> & layers,
                                                    const std::vector<common_classifier_pooling> & poolings) {
+    // with a template: the templated inputs, and per input the text range that mean pooling reads
+    const bool templated = !tmpl.empty() && tmpl != "none";
+    std::vector<llama_tokens> items;
+    std::vector<std::pair<int64_t, int64_t>> ranges;
+    for (const auto & tokens : items_in) {
+        check_tokens(tokens);
+        int64_t tb = 0, te = 0;
+        items.push_back(apply_template(tokens, tb, te));
+        ranges.emplace_back(tb, te);
+    }
+    if (templated && std::find(poolings.begin(), poolings.end(), COMMON_CLASSIFIER_POOL_SPAN) != poolings.end()) {
+        throw std::invalid_argument("features: span pooling cannot be combined with a template");
+    }
     int64_t n_total = 0;
     for (const auto & tokens : items) {
-        check_tokens(tokens);
         n_total += (int64_t) tokens.size();
     }
     std::vector<json> out;
     if (!feat || items.size() == 1 || (int32_t) items.size() > n_seq_batch || n_total > n_ctx ||
         (bidirectional && n_total > n_ubatch)) {
-        for (const auto & tokens : items) {
+        for (const auto & tokens : items_in) {   // features() applies the template itself
             out.push_back(features(tokens, layers, poolings));
         }
         return out;
@@ -439,13 +511,17 @@ std::vector<json> server_classifier::features_batch(const std::vector<llama_toke
     decode_batch(*feat, items, n_total);
     std::vector<float> x;
     int64_t begin = 0;
-    for (const auto & tokens : items) {
-        const int64_t end = begin + (int64_t) tokens.size();
+    for (size_t k = 0; k < items.size(); k++) {
+        const int64_t end = begin + (int64_t) items[k].size();
         json o = json::object();
         for (int32_t L : layers) {
             json per = json::object();
             for (auto pool : poolings) {
-                feat->cap.get_range(L, pool, begin, end, x);
+                if (templated && pool != COMMON_CLASSIFIER_POOL_LAST) {
+                    feat->cap.get_range(L, COMMON_CLASSIFIER_POOL_MEAN, begin + ranges[k].first, begin + ranges[k].second, x);
+                } else {
+                    feat->cap.get_range(L, pool, begin, end, x);
+                }
                 per[common_classifier_pooling_name(pool)] = x;
             }
             o[std::to_string(L)] = per;

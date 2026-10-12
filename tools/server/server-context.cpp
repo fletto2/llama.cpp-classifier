@@ -3276,13 +3276,17 @@ private:
                                 if (ul.is_string() && ul.get<std::string>() == "inputs") {
                                     unl_inputs = true;
                                 } else if (ul.is_array()) {
-                                    for (const auto & e : ul) unl.push_back(common_tokenize(vocab, e.get<std::string>(), true, true));
+                                    for (const auto & e : ul) {
+                                        unl.push_back(e.is_string() ? common_tokenize(vocab, e.get<std::string>(), true, true)
+                                                                    : e.get<llama_tokens>());
+                                    }
                                 } else {
                                     throw std::invalid_argument("\"unlabeled\" must be an array of texts or \"inputs\"");
                                 }
                             }
                             classifier->bidirectional = task.feature_bidirectional;
-                            struct reset_bidir { server_classifier * c; ~reset_bidir() { c->bidirectional = false; } } rb{classifier.get()};
+                            classifier->tmpl = task.feature_template;
+                        struct reset_bidir { server_classifier * c; ~reset_bidir() { c->bidirectional = false; c->tmpl.clear(); } } rb{classifier.get()};
                             qa = classifier->classify_questions(items, qs, layer, pool, task.questions.value("temperature", 0.05), unl, unl_inputs);
                         }
                         std::vector<json> ha(items.size(), json::object());
@@ -3342,7 +3346,8 @@ private:
                         res->id    = task.id;
                         res->index = task.index;
                         classifier->bidirectional = task.feature_bidirectional;
-                        struct reset_bidir { server_classifier * c; ~reset_bidir() { c->bidirectional = false; } } rb{classifier.get()};
+                        classifier->tmpl = task.feature_template;
+                        struct reset_bidir { server_classifier * c; ~reset_bidir() { c->bidirectional = false; c->tmpl.clear(); } } rb{classifier.get()};
                         if (!task.tokens_classify_batch.empty()) {
                             // several inputs: an array of results, flattened by the handler
                             const auto feats = classifier->features_batch(task.tokens_classify_batch, layers, poolings);
@@ -6357,8 +6362,14 @@ void server_routes::init_routes() {
         json qjson;
         if (type == SERVER_TASK_TYPE_CLASSIFY && body.contains("questions")) {
             qjson = json::object();
-            for (const char * k : {"questions", "layer", "pooling", "temperature", "questions_only", "unlabeled", "attention"}) {
+            for (const char * k : {"questions", "layer", "pooling", "temperature", "questions_only", "unlabeled", "attention", "template"}) {
                 if (body.contains(k)) qjson[k] = body.at(k);
+            }
+            // "unlabeled": "inputs" means all of the request's inputs; a long list is split into several tasks below,
+            // so the list itself is stored here and every task sees the same population
+            if (qjson.contains("unlabeled") && qjson.at("unlabeled") == "inputs" && input.is_array() &&
+                !json_is_array_and_contains_numbers(input)) {
+                qjson["unlabeled"] = input;
             }
         }
         // /features: "layers" (a number or an array, default the last layer), "pooling" ("mean", "last" or both)
@@ -6373,6 +6384,15 @@ void server_routes::init_routes() {
                 return res;
             }
             bidirectional = att == "bidirectional";
+        }
+        // "template": "echo" or "prompteol" (or "none") for /features and /classify questions
+        std::string tmpl;
+        if (body.contains("template")) {
+            tmpl = body.at("template").is_string() ? body.at("template").get<std::string>() : "?";
+            if (tmpl != "none" && tmpl != "echo" && tmpl != "prompteol") {
+                res->error(format_error_response("\"template\" must be \"echo\", \"prompteol\" or \"none\"", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
         }
         if (type == SERVER_TASK_TYPE_FEATURES) {
             const json jl = body.value("layers", json::array());
@@ -6439,6 +6459,7 @@ void server_routes::init_routes() {
                     task.feature_layers   = layers;
                     task.feature_poolings = poolings;
                     task.feature_bidirectional = bidirectional;
+                    task.feature_template = tmpl;
                     task.questions        = qjson;
                     int64_t n_total = 0;
                     while (i < items.size() && task.tokens_classify_batch.size() < SERVER_CLASSIFIER_MAX_SEQ &&
@@ -6459,6 +6480,7 @@ void server_routes::init_routes() {
                 task.feature_layers   = layers;
                 task.feature_poolings = poolings;
                 task.feature_bidirectional = bidirectional;
+                task.feature_template = tmpl;
                 task.questions        = qjson;
                 if (!terms.empty()) task.terms = {terms[i]};
                 tasks.push_back(std::move(task));

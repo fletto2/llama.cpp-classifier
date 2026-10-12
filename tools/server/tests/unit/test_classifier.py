@@ -250,6 +250,46 @@ def test_features_bidirectional(meta):
     assert server.make_request("POST", "/features", data={**body, "attention": "sideways"}).status_code == 400
 
 
+def test_features_templates(meta):
+    # "template": "echo" (mean over the second copy) and "prompteol" (last token after the one-word prompt)
+    server.extra_args = ["--features"]
+    server.start()
+    t = "The little cat played with the dog in the park."
+    body = {"input": t, "layers": 3, "pooling": ["mean", "last"]}
+    plain = server.make_request("POST", "/features", data=body).body["features"]["3"]
+    for tm in ("echo", "prompteol"):
+        f = server.make_request("POST", "/features", data={**body, "template": tm})
+        assert f.status_code == 200
+        g = f.body["features"]["3"]
+        assert max(abs(a - b) for a, b in zip(g["mean"], plain["mean"])) > 1e-4
+        assert max(abs(a - b) for a, b in zip(g["last"], plain["last"])) > 1e-4
+        assert f.body["n_tokens"] > 0
+        # batched equals one by one
+        batch = server.make_request("POST", "/features", data={"input": [t, "The boat sailed away."], "layers": 3,
+                                                               "pooling": ["mean", "last"], "template": tm})
+        assert batch.status_code == 200
+        for pool in ("mean", "last"):
+            assert max(abs(a - b) for a, b in zip(batch.body[0]["features"]["3"][pool], g[pool])) < 5e-3
+    none = server.make_request("POST", "/features", data={**body, "template": "none"}).body["features"]["3"]
+    assert max(abs(a - b) for a, b in zip(none["mean"], plain["mean"])) < 1e-5
+    q = {"mood": {"type": "noul", "true": "a happy story", "false": "a sad story"}}
+    res = server.make_request("POST", "/classify", data={"input": t, "questions": q, "layer": 3, "template": "echo"})
+    assert res.status_code == 200 and 0.0 <= res.body["answers"]["mood"]["noul"] <= 1.0
+    assert server.make_request("POST", "/features", data={**body, "template": "haiku"}).status_code == 400
+    assert server.make_request("POST", "/features", data={"input": t, "layers": 3, "pooling": "span", "template": "echo"}).status_code != 200
+
+
+def test_classify_questions_unlabeled_all_inputs(meta):
+    # "unlabeled": "inputs" uses every input of the request, also when the list is split into several tasks
+    server.extra_args = ["--features"]
+    server.start()
+    q = {"mood": {"type": "noul", "true": "a happy story", "false": "a sad story"}}
+    texts = [f"Story number {i} about a cat and a dog." for i in range(70)]
+    res = server.make_request("POST", "/classify", data={"input": texts, "questions": q, "layer": 3, "unlabeled": "inputs"})
+    assert res.status_code == 200 and len(res.body) == 70
+    assert all(r["answers"]["mood"]["unlabeled"] == 70 for r in res.body)
+
+
 def test_classify_questions_need_features():
     server.start()
     res = server.make_request("POST", "/classify", data={"input": "x", "questions": {"m": {"type": "noul", "true": "a", "false": "b"}}})

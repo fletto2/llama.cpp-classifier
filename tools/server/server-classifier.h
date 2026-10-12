@@ -101,7 +101,13 @@ public:
     // those calls, reset afterwards; trained heads always run causally, as they were fitted). A convenience mode: the
     // model was trained causally, so the features shift; every input must fit in one ubatch.
     bool          bidirectional = false;
+    // a prompt template for the same calls: "" (none), "echo" (the text written twice, mean pooling over the second
+    // copy) or "prompteol" (This sentence: "<text>" means in one word: ", last pooling reads the closing quote, mean
+    // pooling the text). Set by the server per request and reset afterwards.
+    std::string   tmpl;
 private:
+    // the templated tokens of an input and the range [text_begin, text_end) that mean pooling reads
+    llama_tokens apply_template(const llama_tokens & tokens, int64_t & text_begin, int64_t & text_end) const;
     int32_t       n_vocab  = 0;
     int32_t       n_layer_ = 0;
     int32_t       n_threads = 1;
