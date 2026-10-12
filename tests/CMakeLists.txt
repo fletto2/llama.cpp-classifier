@@ -1,4 +1,5 @@
 llama_add_compile_flags()
+find_package(Threads REQUIRED)
 
 # Optional args:
 # - LINK: libraries to link against (defaults to llama-common, which also brings llama)
@@ -306,9 +307,9 @@ if (GGML_METAL AND NOT GGML_BACKEND_DL)
     target_include_directories(test-metal-graph-optimize PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src ${PROJECT_SOURCE_DIR}/ggml/src/ggml-metal)
 endif()
 
-llama_build(test-backend-ops.cpp LINK ggml)
+llama_build(test-backend-ops.cpp LINK ggml Threads::Threads)
 
-llama_build_and_test(test-tiled-mulmat.cpp LINK ggml)
+llama_build_and_test(test-tiled-mulmat.cpp LINK ggml Threads::Threads)
 llama_build_and_test(test-model-load-cancel.cpp LABEL "model")
 llama_build_and_test(test-autorelease.cpp       LABEL "model")
 llama_build_and_test(test-backend-sampler.cpp   LABEL "model")
