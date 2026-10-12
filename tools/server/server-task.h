@@ -232,6 +232,7 @@ struct server_task {
     // candidates) and pooling names (mean, last)
     std::vector<int32_t>     feature_layers;
     std::vector<std::string> feature_poolings;
+    bool                     feature_bidirectional = false; // "attention": "bidirectional"
 
     // used by SERVER_TASK_TYPE_CLASSIFY_ADD_HEAD
     std::shared_ptr<common_classifier_head> classifier_head;

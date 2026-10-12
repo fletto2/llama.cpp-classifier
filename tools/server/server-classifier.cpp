@@ -148,8 +148,15 @@ void server_classifier::decode(server_classifier_ctx & c, const llama_tokens & t
     c.cap.keep_rows = keep_rows || std::any_of(heads.begin(), heads.end(), [](const common_classifier_head & h) {
         return h.pooling == COMMON_CLASSIFIER_POOL_SPAN; });
     llama_memory_clear(llama_get_memory(c.ctx), true);
+    const bool bidir = bidirectional && &c == feat.get();
+    if (bidir && (int32_t) tokens.size() > n_ubatch) {
+        throw std::invalid_argument("bidirectional attention needs the whole input in one compute step: " +
+                                    std::to_string(tokens.size()) + " tokens > --classifier-ubatch " + std::to_string(n_ubatch));
+    }
+    llama_set_causal_attn(c.ctx, !bidir);
     llama_tokens ids = tokens;
     const int32_t ret = llama_decode(c.ctx, llama_batch_get_one(ids.data(), (int32_t) ids.size()));
+    llama_set_causal_attn(c.ctx, true);
     if (!c.cap.error.empty()) {
         throw std::runtime_error(c.cap.error);
     }
@@ -247,6 +254,8 @@ void server_classifier::decode_batch(server_classifier_ctx & c, const std::vecto
     c.cap.reset();
     c.cap.keep_rows = true;
     llama_memory_clear(llama_get_memory(c.ctx), true);
+    const bool bidir = bidirectional && &c == feat.get();
+    llama_set_causal_attn(c.ctx, !bidir);   // features_batch only batches what fits in one ubatch when bidirectional
     llama_batch batch = llama_batch_init((int32_t) n_total, 0, 1);
     for (size_t s = 0; s < items.size(); s++) {
         for (size_t i = 0; i < items[s].size(); i++) {
@@ -259,6 +268,7 @@ void server_classifier::decode_batch(server_classifier_ctx & c, const std::vecto
         }
     }
     const int32_t ret = llama_decode(c.ctx, batch);
+    llama_set_causal_attn(c.ctx, true);
     llama_batch_free(batch);
     c.cap.keep_rows = false;
     if (!c.cap.error.empty()) {
@@ -409,7 +419,8 @@ std::vector<json> server_classifier::features_batch(const std::vector<llama_toke
         n_total += (int64_t) tokens.size();
     }
     std::vector<json> out;
-    if (!feat || items.size() == 1 || (int32_t) items.size() > n_seq_batch || n_total > n_ctx) {
+    if (!feat || items.size() == 1 || (int32_t) items.size() > n_seq_batch || n_total > n_ctx ||
+        (bidirectional && n_total > n_ubatch)) {
         for (const auto & tokens : items) {
             out.push_back(features(tokens, layers, poolings));
         }

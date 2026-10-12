@@ -228,6 +228,28 @@ def test_classify_questions_unlabeled(meta):
     assert server.make_request("POST", "/classify", data={"input": "x", "questions": q, "unlabeled": 5}).status_code == 400
 
 
+def test_features_bidirectional(meta):
+    # "attention": "bidirectional" runs the features context without the causal mask for that request only
+    server.extra_args = ["--features"]
+    server.start()
+    t = "The little cat played with the dog in the park."
+    body = {"input": t, "layers": 3, "pooling": "mean"}
+    causal = server.make_request("POST", "/features", data=body).body["features"]["3"]["mean"]
+    bidir = server.make_request("POST", "/features", data={**body, "attention": "bidirectional"}).body["features"]["3"]["mean"]
+    again = server.make_request("POST", "/features", data=body).body["features"]["3"]["mean"]
+    assert len(bidir) == len(causal)
+    assert max(abs(a - b) for a, b in zip(causal, bidir)) > 1e-4      # the mask changes the features
+    assert max(abs(a - b) for a, b in zip(causal, again)) < 1e-5      # and is restored for the next request
+    texts = [t, "She baked bread for her friends.", "The boat sailed away."]
+    batch = server.make_request("POST", "/features", data={"input": texts, "layers": 3, "pooling": "mean", "attention": "bidirectional"})
+    assert batch.status_code == 200 and len(batch.body) == 3
+    assert max(abs(a - b) for a, b in zip(batch.body[0]["features"]["3"]["mean"], bidir)) < 5e-3   # batched = one by one
+    q = {"mood": {"type": "noul", "true": "a happy story", "false": "a sad story"}}
+    res = server.make_request("POST", "/classify", data={"input": t, "questions": q, "layer": 3, "attention": "bidirectional"})
+    assert res.status_code == 200 and 0.0 <= res.body["answers"]["mood"]["noul"] <= 1.0
+    assert server.make_request("POST", "/features", data={**body, "attention": "sideways"}).status_code == 400
+
+
 def test_classify_questions_need_features():
     server.start()
     res = server.make_request("POST", "/classify", data={"input": "x", "questions": {"m": {"type": "noul", "true": "a", "false": "b"}}})

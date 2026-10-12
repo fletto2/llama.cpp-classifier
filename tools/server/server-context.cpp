@@ -3281,6 +3281,8 @@ private:
                                     throw std::invalid_argument("\"unlabeled\" must be an array of texts or \"inputs\"");
                                 }
                             }
+                            classifier->bidirectional = task.feature_bidirectional;
+                            struct reset_bidir { server_classifier * c; ~reset_bidir() { c->bidirectional = false; } } rb{classifier.get()};
                             qa = classifier->classify_questions(items, qs, layer, pool, task.questions.value("temperature", 0.05), unl, unl_inputs);
                         }
                         std::vector<json> ha(items.size(), json::object());
@@ -3339,6 +3341,8 @@ private:
                         auto res = std::make_unique<server_task_result_json>();
                         res->id    = task.id;
                         res->index = task.index;
+                        classifier->bidirectional = task.feature_bidirectional;
+                        struct reset_bidir { server_classifier * c; ~reset_bidir() { c->bidirectional = false; } } rb{classifier.get()};
                         if (!task.tokens_classify_batch.empty()) {
                             // several inputs: an array of results, flattened by the handler
                             const auto feats = classifier->features_batch(task.tokens_classify_batch, layers, poolings);
@@ -6353,13 +6357,23 @@ void server_routes::init_routes() {
         json qjson;
         if (type == SERVER_TASK_TYPE_CLASSIFY && body.contains("questions")) {
             qjson = json::object();
-            for (const char * k : {"questions", "layer", "pooling", "temperature", "questions_only", "unlabeled"}) {
+            for (const char * k : {"questions", "layer", "pooling", "temperature", "questions_only", "unlabeled", "attention"}) {
                 if (body.contains(k)) qjson[k] = body.at(k);
             }
         }
         // /features: "layers" (a number or an array, default the last layer), "pooling" ("mean", "last" or both)
         std::vector<int32_t>     layers;
         std::vector<std::string> poolings;
+        // "attention": "causal" (default) or "bidirectional" for /features and /classify questions
+        bool bidirectional = false;
+        if (body.contains("attention")) {
+            const std::string att = body.at("attention").is_string() ? body.at("attention").get<std::string>() : "";
+            if (att != "causal" && att != "bidirectional") {
+                res->error(format_error_response("\"attention\" must be \"causal\" or \"bidirectional\"", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+            bidirectional = att == "bidirectional";
+        }
         if (type == SERVER_TASK_TYPE_FEATURES) {
             const json jl = body.value("layers", json::array());
             if (jl.is_number_integer()) {
@@ -6424,6 +6438,7 @@ void server_routes::init_routes() {
                     task.index = tasks.size();
                     task.feature_layers   = layers;
                     task.feature_poolings = poolings;
+                    task.feature_bidirectional = bidirectional;
                     task.questions        = qjson;
                     int64_t n_total = 0;
                     while (i < items.size() && task.tokens_classify_batch.size() < SERVER_CLASSIFIER_MAX_SEQ &&
@@ -6443,6 +6458,7 @@ void server_routes::init_routes() {
                 task.tokens_classify  = std::move(items[i]);
                 task.feature_layers   = layers;
                 task.feature_poolings = poolings;
+                task.feature_bidirectional = bidirectional;
                 task.questions        = qjson;
                 if (!terms.empty()) task.terms = {terms[i]};
                 tasks.push_back(std::move(task));

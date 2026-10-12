@@ -96,6 +96,12 @@ private:
     int32_t       n_embd   = 0;
     int32_t       n_ctx    = 0; // requested maximum input length (the context itself is padded to a multiple of 256)
     int32_t       n_ubatch = 512; // tokens per compute step (sizes the compute buffers)
+public:
+    // bidirectional attention for the features context and questions of the current request (set by the server around
+    // those calls, reset afterwards; trained heads always run causally, as they were fitted). A convenience mode: the
+    // model was trained causally, so the features shift; every input must fit in one ubatch.
+    bool          bidirectional = false;
+private:
     int32_t       n_vocab  = 0;
     int32_t       n_layer_ = 0;
     int32_t       n_threads = 1;
