@@ -1788,6 +1788,18 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             if (!layer.wqkv_gate_in_s && layer.wqkv_gate) {
                 layer.wqkv_gate_in_s = create_tensor(tn(LLM_TENSOR_ATTN_GATE, "input_scale", i), {1}, TENSOR_NOT_REQUIRED);
             }
+
+            // KV-cache fold written by llama-kv-fold (per key head and channel)
+            if (layer.wk || layer.wqkv) {
+                const int64_t n_embd_head_k_l = hparams.n_embd_head_k(i);
+                const int64_t n_head_kv_l     = hparams.n_head_kv(i);
+                if (!layer.attn_k_fold) {
+                    layer.attn_k_fold  = create_tensor(tn(LLM_TENSOR_ATTN_K_FOLD,  "weight", i), {n_embd_head_k_l, n_head_kv_l}, TENSOR_NOT_REQUIRED);
+                }
+                if (!layer.attn_k_shift) {
+                    layer.attn_k_shift = create_tensor(tn(LLM_TENSOR_ATTN_K_SHIFT, "weight", i), {n_embd_head_k_l, n_head_kv_l}, TENSOR_NOT_REQUIRED);
+                }
+            }
             if (!layer.ffn_gate_in_s && layer.ffn_gate) {
                 layer.ffn_gate_in_s = create_tensor(tn(LLM_TENSOR_FFN_GATE, "input_scale", i), {1}, TENSOR_NOT_REQUIRED);
             }

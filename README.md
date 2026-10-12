@@ -8,6 +8,7 @@ This is [llama.cpp](https://github.com/ggml-org/llama.cpp) plus a few small patc
 - **llama-server LoRA training** on the loaded model between requests (`--lora-train`, `POST /lora/train`).
 - **CPU + integrated GPU co-processing** of Q4_0 matrix products for prompt processing on boards whose GPU shares memory with the CPU (`GGML_CPU_COPROC_VULKAN`).
 - **Bolmo / Bwen byte-level models** (arch `bolmo`): conversion, quantization and `llama-bolmo` for generation and per-byte scoring.
+- **KV-cache fold** (`llama-kv-fold`): per-channel key scales and a key offset written into the model, exact for attention, so a 4.5-bit K cache loses about 7–12× less.
 
 Everything else is unchanged upstream code. For building, models, tools and the full documentation, see the [official llama.cpp README](https://github.com/ggml-org/llama.cpp/blob/master/README.md).
 
@@ -202,3 +203,44 @@ Measured with Qwen3-1.7B Q4_0, 4 threads, prompt 512 tokens, on a 4-core single-
 - The mLSTM cell is built from standard ggml ops, so it runs on any backend: the parallel form for a prompt, the recurrent step for generation. It drops the kernels' max-stabiliser, which is safe in float32 because the gates are soft-capped (input gate at most e^15, forget gate at most 1). One sequence at a time.
 
 Checked against the Hugging Face implementation (transformers 4.57.3, xlstm 2.0.4, CPU fp32) on four prompts (English, x86 assembly, Python): Bolmo-1B F32 and Bwen-8B F16 GGUFs give the same patch boundaries, a 520-way softmax within KL 4e-6 at every byte (2.4e-5 with CUDA), and byte-identical greedy generations (51 to 91 bytes). Bolmo-1B Q8_0 on an RTX 5090: 660 bytes/s greedy generation.
+
+## KV-cache fold (`llama-kv-fold`)
+
+A quantized K cache loses most of its accuracy to a few key channels that are much larger than the rest, and to the
+keys' common offset. The fold removes both without changing attention: for each attention layer, key head and channel,
+
+- the key is stored as `(k - shift) / fold`, after RoPE
+- the queries of that key head are multiplied by `fold`
+
+`q.k` then changes only by `q.shift`, which is the same for every key of a query and cancels in the softmax, and `fold`
+is equal within each RoPE pair, so it commutes with RoPE. With an F16 cache the folded model gives the same logits as
+the original (KL 0.00000 on the test below).
+
+`llama-kv-fold` calibrates the two tensors on a text and writes a copy of the model that carries them:
+
+```sh
+llama-kv-fold -m model.gguf -f calib.txt -o model-kvfold.gguf [-c 512] [--chunks 64] [--alpha 0.5] [--no-shift] [-t N]
+```
+
+`shift` is the mean key after RoPE, `fold` = rms_k^alpha / rms_q^(1-alpha) per channel, averaged within each RoPE pair;
+the first token of each chunk (the attention sink) is left out. The tensors (`blk.N.attn_k_fold`, `blk.N.attn_k_shift`,
+F32 `[n_embd_head_k, n_head_kv]`) are optional and loaded for any architecture; a model without them runs as before.
+Use the folded model with a quantized cache as usual (`-ctk q4_0 -ctv q4_0`, `-ctk iq4_nl -ctv iq4_nl`). llama.cpp's
+own Hadamard rotation of quantized caches stays on; the fold is applied before it.
+
+Qwen3-1.7B F16, 512-token chunks of a held-out text, KL to the F16 model with an F16 cache, CPU, calibration on 32k
+tokens of a disjoint text:
+
+| K / V cache | bits per value | model | mean KL | same top token |
+|---|---:|---|---:|---:|
+| q4_0 / q4_0 | 4.5 | original | 0.244 | 84.2% |
+| q4_0 / q4_0 | 4.5 | fold only (`--no-shift`) | 0.050 | 93.1% |
+| q4_0 / q4_0 | 4.5 | fold + shift | 0.033 | 94.3% |
+| iq4_nl / iq4_nl | 4.5 | original | 0.315 | 81.9% |
+| iq4_nl / iq4_nl | 4.5 | fold + shift | 0.025 | 94.9% |
+| q4_0 / q8_0 | 4.5 / 8.5 | original | 0.237 | 84.6% |
+| q4_0 / q8_0 | 4.5 / 8.5 | fold + shift | 0.028 | 94.8% |
+| q5_0 / q4_0 | 5.5 / 4.5 | original | 0.045 | 93.6% |
+| q5_0 / q4_0 | 5.5 / 4.5 | fold + shift | 0.012 | 96.5% |
+| q5_0 / q5_0 | 5.5 | original | 0.043 | 93.8% |
+

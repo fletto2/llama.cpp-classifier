@@ -782,6 +782,7 @@ public:
 using llm_graph_cb = std::function<void(const llama_ubatch & ubatch, ggml_tensor * cur, const char * name, int il)>;
 
 class llm_graph_result;
+struct llama_layer;
 
 struct llm_graph_params {
     llm_arch arch = LLM_ARCH_UNKNOWN;
@@ -805,6 +806,8 @@ struct llm_graph_params {
     const llama_prec_policy * prec_policy = nullptr;
 
     const llama_hadamard * hdmd = nullptr;
+
+    const std::vector<llama_layer> * layers = nullptr; // per-layer KV-cache fold tensors (attn_k_fold / attn_k_shift)
 
     std::map<llama_seq_id, llama_sampler *> samplers;
 
@@ -1063,6 +1066,8 @@ struct llm_graph_context {
 
     const llama_hadamard * hdmd;
 
+    const std::vector<llama_layer> * layers;
+
     std::map<llama_seq_id, llama_sampler *> samplers;
 
     const llm_graph_cb & cb_func;
@@ -1267,6 +1272,9 @@ struct llm_graph_context {
             ggml_tensor * v_mla, // [n_embd_head_v_mla, n_embd_head_v, n_head_v]
                   float   kq_scale,
                     int   il) const;
+
+    // KV-cache fold: applied at the top of build_attn when the layer has attn_k_fold / attn_k_shift
+    void build_attn_kfold(ggml_tensor *& q_cur, ggml_tensor *& k_cur, int il) const;
 
     llm_graph_input_attn_kv * build_attn_inp_kv() const;
 

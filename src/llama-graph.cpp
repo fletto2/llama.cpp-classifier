@@ -1560,6 +1560,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     moe_cache        (params.moe_cache),
     prec_policy      (params.prec_policy),
     hdmd             (params.hdmd),
+    layers           (params.layers),
     samplers         (params.samplers),
     cb_func          (params.cb),
     res              (params.res),
@@ -3021,6 +3022,42 @@ llm_graph_input_attn_no_cache * llm_graph_context::build_attn_inp_no_cache() con
     return (llm_graph_input_attn_no_cache *) res->add_input(std::move(inp));
 }
 
+// KV-cache fold (llama-kv-fold): k <- (k - shift) / fold per key head and channel, q <- q * fold for the query heads
+// of that key head. q.k changes only by q.shift, the same for every key of a query, which softmax removes, so attention
+// is exact; the cache then stores keys with evened-out channels, which quantize with less error.
+void llm_graph_context::build_attn_kfold(ggml_tensor *& q_cur, ggml_tensor *& k_cur, int il) const {
+    if (!layers || il < 0 || (size_t) il >= layers->size()) {
+        return;
+    }
+    ggml_tensor * fold  = (*layers)[il].attn_k_fold;
+    ggml_tensor * shift = (*layers)[il].attn_k_shift;
+    if (!fold && !shift) {
+        return;
+    }
+    const int64_t hd  = k_cur->ne[0];
+    const int64_t nkh = k_cur->ne[1];
+    const bool ok = q_cur->ne[0] == hd && q_cur->ne[1] % nkh == 0 &&
+        (!fold  || (fold->ne[0]  == hd && fold->ne[1]  == nkh)) &&
+        (!shift || (shift->ne[0] == hd && shift->ne[1] == nkh));
+    GGML_ASSERT(ok && "attn_k_fold / attn_k_shift do not match the key heads");
+    if (shift) {
+        k_cur = ggml_sub(ctx0, k_cur, shift);
+    }
+    if (fold) {
+        k_cur = ggml_div(ctx0, k_cur, fold);
+        if (!ggml_is_contiguous(q_cur)) {
+            q_cur = ggml_cont(ctx0, q_cur);
+        }
+        const int64_t nh = q_cur->ne[1];
+        const int64_t nt = q_cur->ne[2];
+        ggml_tensor * q4 = ggml_reshape_4d(ctx0, q_cur, hd, nh / nkh, nkh, nt);
+        q4 = ggml_mul(ctx0, q4, ggml_reshape_4d(ctx0, fold, hd, 1, nkh, 1));
+        q_cur = ggml_reshape_3d(ctx0, q4, hd, nh, nt);
+    }
+    cb(q_cur, "q_kfold", il);
+    cb(k_cur, "k_kfold", il);
+}
+
 ggml_tensor * llm_graph_context::build_attn(
         llm_graph_input_attn_no_cache * inp,
         ggml_tensor * wo,
@@ -3034,6 +3071,8 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * v_mla,
             float     kq_scale,
             int       il) const {
+    build_attn_kfold(q_cur, k_cur, il);
+
     GGML_UNUSED(n_tokens);
 
     // these nodes are added to the graph together so that they are not reordered
@@ -3119,6 +3158,8 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * v_mla, // TODO: remove
             float     kq_scale,
             int       il) const {
+    build_attn_kfold(q_cur, k_cur, il);
+
     GGML_ASSERT(v_mla == nullptr);
 
     if (inp->self_k_rot) {
@@ -3232,6 +3273,8 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * v_mla,
             float     kq_scale,
             int       il) const {
+    build_attn_kfold(q_cur, k_cur, il);
+
     // these nodes are added to the graph together so that they are not reordered
     // by doing so, the number of splits in the graph is reduced
     // expand k later to enable rope fusion which directly writes into k-v cache
@@ -3366,6 +3409,8 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * v_mla,
             float     kq_scale,
             int       il) const {
+    build_attn_kfold(q_cur, k_cur, il);
+
     const bool is_swa = hparams.is_swa(il);
 
     auto * k_rot = is_swa ? inp->self_k_rot_swa : inp->self_k_rot;
@@ -3461,6 +3506,8 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * v_mla,
             float     kq_scale,
             int       il) const {
+    build_attn_kfold(q_cur, k_cur, il);
+
     const bool is_swa = hparams.is_swa(il);
 
     auto * k_rot = is_swa ? inp->self_k_rot_swa : inp->self_k_rot;

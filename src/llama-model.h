@@ -515,6 +515,11 @@ struct llama_layer {
     // openai-moe
     struct ggml_tensor * attn_sinks = nullptr;
 
+    // KV-cache fold (llama-kv-fold): keys are stored as (k - shift) / fold and queries scaled by fold, after RoPE;
+    // exact for attention, it evens out the key channels before the cache is quantized
+    struct ggml_tensor * attn_k_fold  = nullptr; // [n_embd_head_k, n_head_kv]
+    struct ggml_tensor * attn_k_shift = nullptr; // [n_embd_head_k, n_head_kv]
+
     // DeepSeek-V4
     struct ggml_tensor * attn_kv_norm = nullptr;
     struct ggml_tensor * hc_attn_fn   = nullptr;
