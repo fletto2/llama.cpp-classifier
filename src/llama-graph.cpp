@@ -1561,6 +1561,9 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     prec_policy      (params.prec_policy),
     hdmd             (params.hdmd),
     layers           (params.layers),
+    moe_sel_bias     (params.moe_sel_bias),
+    moe_resident     (params.moe_resident),
+    moe_tail_mask    (params.moe_tail_mask),
     samplers         (params.samplers),
     cb_func          (params.cb),
     res              (params.res),
@@ -2145,6 +2148,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
          ggml_tensor * gate_exps_s,
          ggml_tensor * down_exps_s,
          ggml_tensor * selected_experts_in) const {
+    // llama_set_moe_selection_bias: a context-level selection bias for models without their own exp_probs_b
+    if (exp_probs_b == nullptr && moe_sel_bias != nullptr && il >= 0 && (size_t) il < moe_sel_bias->size() &&
+            (*moe_sel_bias)[il] != nullptr && (*moe_sel_bias)[il]->ne[0] == n_expert) {
+        exp_probs_b = (*moe_sel_bias)[il];
+    }
     const int64_t n_embd   = cur->ne[0];
     const int64_t n_tokens = cur->ne[1];
     const bool weight_before_ffn = arch == LLM_ARCH_LLAMA4; // for llama4, we apply the sigmoid-ed weights before the FFN
@@ -2279,6 +2287,17 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     if (w_scale != 0.0f && w_scale != 1.0f) {
         weights = ggml_scale(ctx0, weights, w_scale);
         cb(weights, "ffn_moe_weights_scaled", il);
+    }
+
+    // llama_set_moe_tail_skip: non-resident experts at the low ranks get weight 0 (not renormalised)
+    if (moe_resident != nullptr && moe_tail_mask != nullptr && il >= 0 && (size_t) il < moe_resident->size() &&
+            (*moe_resident)[il] != nullptr && (*moe_resident)[il]->ne[0] == n_expert && moe_tail_mask->ne[0] == n_expert_used) {
+        ggml_tensor * res = ggml_repeat_4d(ctx0, ggml_reshape_3d(ctx0, (*moe_resident)[il], 1, n_expert, 1), 1, n_expert, n_tokens, 1);
+        ggml_tensor * res_sel = ggml_get_rows(ctx0, res, selected_experts);                  // [1, n_expert_used, n_tokens]
+        ggml_tensor * drop = ggml_mul(ctx0, ggml_scale_bias(ctx0, res_sel, -1.0f, 1.0f),     // not resident
+                ggml_reshape_3d(ctx0, moe_tail_mask, 1, n_expert_used, 1));                   // and at a low rank
+        weights = ggml_mul(ctx0, weights, ggml_scale_bias(ctx0, drop, -1.0f, 1.0f));
+        cb(weights, "ffn_moe_weights_tail_skip", il);
     }
 
     //call early so that topk-moe can be used

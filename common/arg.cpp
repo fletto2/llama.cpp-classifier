@@ -2787,6 +2787,29 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_MOE_CACHE_MIB"));
     add_opt(common_arg(
+        {"--moe-selection-bias"}, "FNAME",
+        "expert selection bias for MoE layers: a raw float32 file of n_layer x n_expert values, added to the router\n"
+        "probabilities for choosing the experts only (their weights are unchanged); e.g. to favour the experts kept in a cache",
+        [](common_params & params, const std::string & value) {
+            params.moe_selection_bias = value;
+        }
+    ).set_env("LLAMA_ARG_MOE_SELECTION_BIAS"));
+    add_opt(common_arg(
+        {"--moe-resident"}, "FNAME",
+        "the experts treated as resident for --moe-tail-skip: a raw float32 file of n_layer x n_expert values, > 0 = resident",
+        [](common_params & params, const std::string & value) {
+            params.moe_resident = value;
+        }
+    ).set_env("LLAMA_ARG_MOE_RESIDENT"));
+    add_opt(common_arg(
+        {"--moe-tail-skip"}, "N",
+        "of the experts a token selects, give weight 0 to those at rank >= N (0-based) that are not resident\n"
+        "(--moe-resident); the other weights are not renormalised (default: -1, off)",
+        [](common_params & params, int value) {
+            params.moe_tail_skip = value;
+        }
+    ).set_env("LLAMA_ARG_MOE_TAIL_SKIP"));
+    add_opt(common_arg(
         {"-ncffn", "--n-cpu-ffn"}, "N",
         "keep the dense FFN weights of the first N layers in the CPU\n"
         "(dense models; for MoE expert weights use --n-cpu-moe)",

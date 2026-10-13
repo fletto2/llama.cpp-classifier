@@ -607,6 +607,9 @@ struct common_params {
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
 
     size_t moe_cache_size = 0; // GPU cache size in bytes for the MoE experts kept in the CPU, split among the GPUs like the layers
+    std::string moe_selection_bias; // raw float32 file, n_layer x n_expert: expert selection bias (llama_set_moe_selection_bias)
+    std::string moe_resident;       // raw float32 file, n_layer x n_expert, > 0 = resident (llama_set_moe_tail_skip)
+    int32_t     moe_tail_skip = -1; // skip non-resident experts at ranks >= this (0-based); -1 = off
 
     common_conversation_mode conversation_mode = COMMON_CONVERSATION_MODE_AUTO;
 

@@ -122,6 +122,8 @@ struct llama_context {
     void set_embeddings_layer_inp(uint32_t lid, bool enable);
     void set_nextn_layer_offset(int32_t offset);
     void set_n_layer_exit(int32_t n);
+    int32_t set_moe_selection_bias(const float * bias, int32_t n_layer, int32_t n_expert);
+    int32_t set_moe_tail_skip(const float * resident, int32_t n_layer, int32_t n_expert, int32_t rank_from);
     void set_causal_attn(bool value);
     void set_warmup(bool value);
 
@@ -419,6 +421,17 @@ private:
 
     // host buffer for the model output (logits and embeddings)
     ggml_backend_buffer_ptr buf_output;
+
+    // llama_set_moe_selection_bias: one F32 [n_expert] tensor per layer (CPU buffer)
+    ggml_context_ptr           moe_sel_bias_ctx;
+    ggml_backend_buffer_ptr    moe_sel_bias_buf;
+    std::vector<ggml_tensor *> moe_sel_bias;
+
+    // llama_set_moe_tail_skip: residency per layer (F32 [n_expert], 1 = resident) and the rank mask (F32 [n_expert_used])
+    ggml_context_ptr           moe_tail_ctx;
+    ggml_backend_buffer_ptr    moe_tail_buf;
+    std::vector<ggml_tensor *> moe_resident;
+    ggml_tensor *              moe_tail_mask = nullptr;
 
     // keep copies of the per-sequence memory on the device
     std::map<llama_seq_id, llama_memory_buffers> mem_storage;

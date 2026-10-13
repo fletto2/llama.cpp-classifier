@@ -1461,6 +1461,64 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
         }
     }
 
+    if (!params.moe_selection_bias.empty()) {
+        const int32_t n_layer  = llama_model_n_layer(model);
+        int32_t n_expert = 0;
+        {
+            char arch[128] = {0}, val[64] = {0};
+            if (llama_model_meta_val_str(model, "general.architecture", arch, sizeof(arch)) > 0 &&
+                    llama_model_meta_val_str(model, (std::string(arch) + ".expert_count").c_str(), val, sizeof(val)) > 0) {
+                n_expert = atoi(val);
+            }
+        }
+        std::ifstream f(params.moe_selection_bias, std::ios::binary);
+        std::vector<float> bias((size_t) std::max(0, n_layer) * std::max(0, n_expert));
+        if (n_expert <= 0) {
+            COM_WRN("%s: the model has no experts, --moe-selection-bias ignored\n", __func__);
+        } else if (!f || !f.read((char *) bias.data(), (std::streamsize) (bias.size() * sizeof(float))) ||
+                f.peek() != std::char_traits<char>::eof()) {
+            COM_ERR("%s: %s must hold exactly %d x %d float32 values (layers x experts)\n", __func__,
+                    params.moe_selection_bias.c_str(), n_layer, n_expert);
+            return res;
+        } else {
+            if (llama_set_moe_selection_bias(lctx, bias.data(), n_layer, n_expert) != 0) {
+                return res;
+            }
+            COM_INF("%s: expert selection bias from %s\n", __func__, params.moe_selection_bias.c_str());
+        }
+    }
+
+    if (params.moe_tail_skip >= 0) {
+        if (params.moe_resident.empty()) {
+            COM_ERR("%s: --moe-tail-skip needs --moe-resident\n", __func__);
+            return res;
+        }
+        const int32_t n_layer = llama_model_n_layer(model);
+        int32_t n_expert = 0;
+        {
+            char arch[128] = {0}, val[64] = {0};
+            if (llama_model_meta_val_str(model, "general.architecture", arch, sizeof(arch)) > 0 &&
+                    llama_model_meta_val_str(model, (std::string(arch) + ".expert_count").c_str(), val, sizeof(val)) > 0) {
+                n_expert = atoi(val);
+            }
+        }
+        std::ifstream f(params.moe_resident, std::ios::binary);
+        std::vector<float> resident((size_t) std::max(0, n_layer) * std::max(0, n_expert));
+        if (n_expert <= 0) {
+            COM_WRN("%s: the model has no experts, --moe-tail-skip ignored\n", __func__);
+        } else if (!f || !f.read((char *) resident.data(), (std::streamsize) (resident.size() * sizeof(float))) ||
+                f.peek() != std::char_traits<char>::eof()) {
+            COM_ERR("%s: %s must hold exactly %d x %d float32 values (layers x experts)\n", __func__,
+                    params.moe_resident.c_str(), n_layer, n_expert);
+            return res;
+        } else {
+            if (llama_set_moe_tail_skip(lctx, resident.data(), n_layer, n_expert, params.moe_tail_skip) != 0) {
+                return res;
+            }
+            COM_INF("%s: tail skip of non-resident experts from rank %d\n", __func__, params.moe_tail_skip);
+        }
+    }
+
     if (llama_pooling_type(lctx) == LLAMA_POOLING_TYPE_RANK) {
         bool ok = true;
 

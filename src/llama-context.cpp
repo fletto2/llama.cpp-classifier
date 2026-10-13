@@ -1390,6 +1390,86 @@ void llama_context::set_n_layer_exit(int32_t n) {
     sched_need_reserve = true;
 }
 
+int32_t llama_context::set_moe_selection_bias(const float * bias, int32_t n_layer, int32_t n_expert) {
+    if (bias == nullptr) {
+        moe_sel_bias.clear();
+        moe_sel_bias_buf.reset();
+        moe_sel_bias_ctx.reset();
+        sched_need_reserve = true;
+        return 0;
+    }
+    if (n_expert != (int32_t) model.hparams.n_expert || n_expert <= 0 || n_layer != (int32_t) model.hparams.n_layer()) {
+        LLAMA_LOG_ERROR("%s: the bias is %d x %d, the model has %d layers and %d experts\n", __func__,
+                n_layer, n_expert, (int) model.hparams.n_layer(), (int) model.hparams.n_expert);
+        return -1;
+    }
+    if ((int32_t) moe_sel_bias.size() != n_layer) {
+        ggml_init_params ip = { (size_t) n_layer * ggml_tensor_overhead(), nullptr, true };
+        moe_sel_bias_ctx.reset(ggml_init(ip));
+        moe_sel_bias.assign(n_layer, nullptr);
+        for (int32_t il = 0; il < n_layer; il++) {
+            moe_sel_bias[il] = ggml_new_tensor_1d(moe_sel_bias_ctx.get(), GGML_TYPE_F32, n_expert);
+            ggml_format_name(moe_sel_bias[il], "moe_sel_bias-%d", il);
+        }
+        moe_sel_bias_buf.reset(ggml_backend_alloc_ctx_tensors_from_buft(moe_sel_bias_ctx.get(), ggml_backend_cpu_buffer_type()));
+        if (!moe_sel_bias_buf) {
+            moe_sel_bias.clear();
+            return -1;
+        }
+        sched_need_reserve = true;
+    }
+    for (int32_t il = 0; il < n_layer; il++) {
+        ggml_backend_tensor_set(moe_sel_bias[il], bias + (size_t) il * n_expert, 0, (size_t) n_expert * sizeof(float));
+    }
+    return 0;
+}
+
+int32_t llama_context::set_moe_tail_skip(const float * resident, int32_t n_layer, int32_t n_expert, int32_t rank_from) {
+    moe_resident.clear();
+    moe_tail_mask = nullptr;
+    moe_tail_buf.reset();
+    moe_tail_ctx.reset();
+    sched_need_reserve = true;
+    if (resident == nullptr || rank_from < 0) {
+        return 0;
+    }
+    const int32_t n_used = (int32_t) model.hparams.n_expert_used();
+    if (n_expert != (int32_t) model.hparams.n_expert || n_expert <= 0 || n_layer != (int32_t) model.hparams.n_layer() ||
+            n_used <= 0 || rank_from >= n_used) {
+        LLAMA_LOG_ERROR("%s: resident table %d x %d, rank %d; the model has %d layers, %d experts, top-%d\n", __func__,
+                n_layer, n_expert, rank_from, (int) model.hparams.n_layer(), (int) model.hparams.n_expert, n_used);
+        return -1;
+    }
+    ggml_init_params ip = { (size_t) (n_layer + 1) * ggml_tensor_overhead(), nullptr, true };
+    moe_tail_ctx.reset(ggml_init(ip));
+    moe_resident.assign(n_layer, nullptr);
+    for (int32_t il = 0; il < n_layer; il++) {
+        moe_resident[il] = ggml_new_tensor_1d(moe_tail_ctx.get(), GGML_TYPE_F32, n_expert);
+        ggml_format_name(moe_resident[il], "moe_resident-%d", il);
+    }
+    moe_tail_mask = ggml_new_tensor_1d(moe_tail_ctx.get(), GGML_TYPE_F32, n_used);
+    ggml_set_name(moe_tail_mask, "moe_tail_mask");
+    moe_tail_buf.reset(ggml_backend_alloc_ctx_tensors_from_buft(moe_tail_ctx.get(), ggml_backend_cpu_buffer_type()));
+    if (!moe_tail_buf) {
+        moe_resident.clear();
+        moe_tail_mask = nullptr;
+        return -1;
+    }
+    std::vector<float> row(n_expert);
+    for (int32_t il = 0; il < n_layer; il++) {
+        for (int32_t e = 0; e < n_expert; e++) {
+            row[e] = resident[(size_t) il * n_expert + e] > 0.0f ? 1.0f : 0.0f;
+        }
+        ggml_backend_tensor_set(moe_resident[il], row.data(), 0, (size_t) n_expert * sizeof(float));
+    }
+    std::vector<float> mask(n_used);
+    for (int32_t r = 0; r < n_used; r++) {
+        mask[r] = r >= rank_from ? 1.0f : 0.0f;
+    }
+    ggml_backend_tensor_set(moe_tail_mask, mask.data(), 0, (size_t) n_used * sizeof(float));
+    return 0;
+}
+
 void llama_context::set_causal_attn(bool value) {
     LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
 
@@ -2738,6 +2818,9 @@ llm_graph_params llama_context::graph_params(
         /*.prec_policy =*/ &model.prec_policy,
         /*.hdmd        =*/ model.hdmd.rot.empty() ? nullptr : &model.hdmd,
         /*.layers      =*/ &model.layers,
+        /*.moe_sel_bias=*/ moe_sel_bias.empty() ? nullptr : &moe_sel_bias,
+        /*.moe_resident=*/ moe_resident.empty() ? nullptr : &moe_resident,
+        /*.moe_tail_mask=*/ moe_tail_mask,
         /*.samplers    =*/ sampling.samplers,
         /*.n_outputs   =*/ n_outputs,
         /*.cb          =*/ graph_get_cb(),
@@ -4314,6 +4397,14 @@ void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
 
 void llama_set_n_layer_exit(llama_context * ctx, int32_t n) {
     ctx->set_n_layer_exit(n);
+}
+
+int32_t llama_set_moe_selection_bias(llama_context * ctx, const float * bias, int32_t n_layer, int32_t n_expert) {
+    return ctx->set_moe_selection_bias(bias, n_layer, n_expert);
+}
+
+int32_t llama_set_moe_tail_skip(llama_context * ctx, const float * resident, int32_t n_layer, int32_t n_expert, int32_t rank_from) {
+    return ctx->set_moe_tail_skip(resident, n_layer, n_expert, rank_from);
 }
 
 llama_memory_t llama_get_memory(const struct llama_context * ctx) {

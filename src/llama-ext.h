@@ -121,6 +121,17 @@ LLAMA_API bool llama_batch_ext_set_decision_order(struct llama_batch_ext * batch
 // warning); lowering n keeps it.
 LLAMA_API void llama_set_n_layer_exit(struct llama_context * ctx, int32_t n);
 
+// Per-layer expert selection bias for MoE layers whose model has no bias of its own: bias[il * n_expert + e] is
+// added to the router probabilities of layer il for choosing the top-k experts only (the expert weights stay the
+// unbiased probabilities), as DeepSeek-V3's exp_probs_b. bias = NULL clears it. Returns 0, or -1 if the sizes do not
+// match the model.
+LLAMA_API int32_t llama_set_moe_selection_bias(struct llama_context * ctx, const float * bias, int32_t n_layer, int32_t n_expert);
+
+// Tail skip for MoE layers: of the top-k experts a token selects, those at rank >= rank_from (0-based, by router
+// probability) that are not resident (resident[il * n_expert + e] <= 0) get weight 0 (the others keep their weights,
+// not renormalised), as Strata's route tail skip. resident = NULL or rank_from < 0 turns it off. Returns 0 or -1.
+LLAMA_API int32_t llama_set_moe_tail_skip(struct llama_context * ctx, const float * resident, int32_t n_layer, int32_t n_expert, int32_t rank_from);
+
 // LoRA training: a new adapter with trainable F32 tensors. For every 2D weight of the repeating
 // layers whose name matches one of the targets ("blk.N.<target>.weight"), A [n_in, rank] is
 // initialised like PEFT (uniform in +-1/sqrt(n_in)) and B [rank, n_out] is zero, so the adapter

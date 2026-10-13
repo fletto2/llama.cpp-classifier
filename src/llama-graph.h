@@ -809,6 +809,11 @@ struct llm_graph_params {
 
     const std::vector<llama_layer> * layers = nullptr; // per-layer KV-cache fold tensors (attn_k_fold / attn_k_shift)
 
+    const std::vector<ggml_tensor *> * moe_sel_bias = nullptr; // llama_set_moe_selection_bias, per layer
+
+    const std::vector<ggml_tensor *> * moe_resident = nullptr; // llama_set_moe_tail_skip: residency per layer
+    ggml_tensor * moe_tail_mask = nullptr;                      // and the ranks that may be skipped
+
     std::map<llama_seq_id, llama_sampler *> samplers;
 
     static bool samplers_equal(
@@ -892,6 +897,10 @@ struct llm_graph_params {
 
         // TODO: https://github.com/ggml-org/llama.cpp/pull/24340#discussion_r3448035248
         if (cparams.nextn_layer_offset != other.cparams.nextn_layer_offset) {
+            return false;
+        }
+
+        if ((moe_sel_bias == nullptr) != (other.moe_sel_bias == nullptr) || moe_tail_mask != other.moe_tail_mask) {
             return false;
         }
 
@@ -1067,6 +1076,11 @@ struct llm_graph_context {
     const llama_hadamard * hdmd;
 
     const std::vector<llama_layer> * layers;
+
+    const std::vector<ggml_tensor *> * moe_sel_bias;
+
+    const std::vector<ggml_tensor *> * moe_resident;
+    ggml_tensor * moe_tail_mask;
 
     std::map<llama_seq_id, llama_sampler *> samplers;
 
