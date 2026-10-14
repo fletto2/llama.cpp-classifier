@@ -4,8 +4,13 @@
 #include "ggml.h"
 #include "gguf.h"
 #include "llama-hparams.h"
+#include "llama-mmap.h"
 #include "llama.h"
 
+#if defined(_POSIX_MAPPED_FILES) || defined(__unix__)
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 #include <algorithm>
 #include <array>
 #include <cinttypes>
@@ -1089,14 +1094,14 @@ ggml_backend_buffer_type_t llama_model_loader::lazy_read::buft() {
     return ggml_backend_dev_buffer_type(cpu_dev);
 }
 
-bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_tensor * t, const llama_tensor_weight * w) {
+bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_tensor * t, const llama_tensor_weight * w, bool expert) {
     if (mode == LLAMA_LAZY_MODE_OFF) {
         return false;
     }
 
     // do not lazy-read small tensors, it has significant overhead and is not worth it
     constexpr size_t auto_min_size = 4ull * 1024 * 1024 * 1024;
-    if (mode != LLAMA_LAZY_MODE_ON && ggml_nbytes(t) <= auto_min_size) {
+    if (mode != LLAMA_LAZY_MODE_ON && mode != LLAMA_LAZY_MODE_EXPERTS && ggml_nbytes(t) <= auto_min_size) {
         return false;
     }
 
@@ -1108,6 +1113,9 @@ bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_ten
 
     if (w) {
         ranges[w->idx].emplace_back(w->offs, w->offs + ggml_nbytes(t));
+        if (expert) {
+            expert_ranges[w->idx].emplace_back(w->offs, w->offs + ggml_nbytes(t));
+        }
         tensors.insert(name);
 
         LLAMA_LOG_INFO("%s: tensor %s (size = %zu MiB) lazy read enabled\n",
@@ -1343,9 +1351,11 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         return NULL;
     }
 
-    if (flags & TENSOR_READ_LAZY) {
+    // --lazy-mode experts: every MoE expert tensor is read on demand too
+    const bool is_exps = lazy.mode == LLAMA_LAZY_MODE_EXPERTS && tn.str().find("_exps") != std::string::npos;
+    if ((flags & TENSOR_READ_LAZY) || is_exps) {
         // the decision must not depend on the load mode, or the memory-fit pass (no_alloc, no mmap)
-        is_lazy = lazy.add(tn.str(), cur, no_alloc ? nullptr : &require_weight(tn.str().c_str()));
+        is_lazy = lazy.add(tn.str(), cur, no_alloc ? nullptr : &require_weight(tn.str().c_str()), is_exps);
     }
 
     ggml_tensor t_meta = *cur;
@@ -1434,6 +1444,23 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
 
             std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch_size, is_numa,
                     lazy.for_file(idx));
+#if defined(_POSIX_MAPPED_FILES)
+            // lazy ranges are advised MADV_RANDOM (row lookups); an expert is read whole, so its range keeps the
+            // normal readahead, otherwise a 1-2 MiB expert would be read in single-page faults
+            {
+                const auto eit = lazy.expert_ranges.find(idx);
+                const size_t page = (size_t) sysconf(_SC_PAGESIZE);
+                if (eit != lazy.expert_ranges.end()) {
+                    for (const auto & r : eit->second) {
+                        const size_t beg = r.first / page * page;
+                        const size_t end = std::min(mapping->size(), (r.second + page - 1) / page * page);
+                        if (beg < end) {
+                            posix_madvise((char *) mapping->addr() + beg, end - beg, POSIX_MADV_NORMAL);
+                        }
+                    }
+                }
+            }
+#endif
             mmaps_used.emplace_back(mapping->size(), 0);
             if (mlock_mmaps) {
                 std::unique_ptr<llama_mlock> mlock_mmap(new llama_mlock());

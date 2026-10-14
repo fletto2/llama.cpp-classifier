@@ -92,7 +92,7 @@ struct llama_model_loader {
 
         // decide whether this tensor is read lazily
         // pass w to also record it, or nullptr to only ask
-        bool add(const std::string & name, const ggml_tensor * t, const llama_tensor_weight * w);
+        bool add(const std::string & name, const ggml_tensor * t, const llama_tensor_weight * w, bool expert = false);
 
         bool any() const {
             return !ranges.empty();
@@ -111,6 +111,9 @@ struct llama_model_loader {
 
         // lazy tensors are gathered on the host, so no offload setting applies to them
         static ggml_backend_buffer_type_t buft();
+
+        // the ranges of the MoE expert tensors (--lazy-mode experts), per file
+        std::map<uint32_t, llama_mmap::ranges> expert_ranges;
 
     private:
         std::map<uint32_t, llama_mmap::ranges> ranges;
