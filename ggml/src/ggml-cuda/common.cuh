@@ -1443,10 +1443,23 @@ struct ggml_cuda_stream_context {
     }
 };
 
+// mul_mat_vec_q input reuse: several matrix-vector products of one graph often read the same single-column F32 input
+// (Q, K, V and gates of one layer); the first one quantizes it to Q8_1 into this buffer and the next ones reuse it
+// while no node has written over the input. Disabled with GGML_CUDA_NO_Q8_REUSE=1.
+struct ggml_cuda_q8_reuse {
+    static constexpr size_t CAP = 64*1024;   // bytes of block_q8_1; inputs of up to ~60k values per column
+    void *       buf      = nullptr;         // device buffer of CAP bytes, allocated before any graph capture
+    const void * src      = nullptr;         // input data the buffer holds the quantization of (nullptr = empty)
+    size_t       src_size = 0;               // bytes of that input
+    int64_t      ne10     = 0;               // its row length
+    bool         enabled  = false;           // set per graph: no concurrent streams, env switch not set
+};
+
 struct ggml_backend_cuda_context {
     int device;
     std::string name;
     cudaEvent_t copy_event = nullptr;
+    ggml_cuda_q8_reuse q8_reuse;
 
     cudaStream_t streams[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = { { nullptr } };
     cublasHandle_t cublas_handles[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {nullptr};
