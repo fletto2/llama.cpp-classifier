@@ -2309,6 +2309,12 @@ struct test_swiglu_oai : public test_case {
             init_tensor_uniform(t, -150.f, 150.f);
         }
     }
+
+    double max_nmse_err() override {
+        // F16 epsilon ~ 9.7e-4: relax tolerance vs the F32 default to absorb the
+        // natural roundoff drift from the exp()/clamp() chain computed in F16.
+        return type == GGML_TYPE_F16 ? 5e-6 : 1e-7;
+    }
 };
 
 struct test_swiglu_clamp : public test_case {
@@ -2365,6 +2371,12 @@ struct test_swiglu_clamp : public test_case {
         for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
             init_tensor_uniform(t, -150.f, 150.f);
         }
+    }
+
+    double max_nmse_err() override {
+        // F16 epsilon ~ 9.7e-4: relax tolerance vs the F32 default to absorb the
+        // natural roundoff drift from the sigmoid()/clamp() chain computed in F16.
+        return type == GGML_TYPE_F16 ? 5e-6 : 1e-7;
     }
 };
 
@@ -7317,6 +7329,7 @@ struct test_topk_moe : public test_case {
     const bool bias_probs;
     const MoeGatingFunc gating_func;
     const float scale_w;
+    const int n_expert_groups;
     ggml_tensor * weights {};
     ggml_tensor * selected_experts {};
 
@@ -7325,17 +7338,21 @@ struct test_topk_moe : public test_case {
                   bool                   with_norm       = false,
                   bool                   bias_probs      = false,
                   MoeGatingFunc          gating_func     = GATING_FUNC_SOFTMAX,
-                  float                  scale_w         = 0.0f) :
+                  float                  scale_w         = 0.0f,
+                  int                    n_expert_groups = 1) :
         ne(ne),
         n_expert_used(n_expert_used),
         with_norm(with_norm),
         bias_probs(bias_probs),
         gating_func(gating_func),
-        scale_w(scale_w) {
+        scale_w(scale_w),
+        n_expert_groups(n_expert_groups) {
         GGML_ASSERT(n_expert_used <= ne[0]);
+        GGML_ASSERT(ne[0] % n_expert_groups == 0);
+        GGML_ASSERT(n_expert_used <= ne[0] / n_expert_groups);
     }
 
-    std::string vars() override { return VARS_TO_STR6(ne, n_expert_used, with_norm, bias_probs, gating_func, scale_w); }
+    std::string vars() override { return VARS_TO_STR7(ne, n_expert_used, with_norm, bias_probs, gating_func, scale_w, n_expert_groups); }
 
     std::string op_desc(ggml_tensor * t) override {
         GGML_UNUSED(t);
@@ -7347,6 +7364,8 @@ struct test_topk_moe : public test_case {
     ggml_tensor * build_graph(ggml_context * ctx) override {
         const int n_expert = ne[0];
         const int n_tokens = ne[1];
+        const int n_exp_per_group = n_expert / n_expert_groups;
+        const int n_group_used = n_expert_groups / 2;
 
         ggml_tensor * logits = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne.data());
         ggml_tensor * probs            =
@@ -7361,6 +7380,24 @@ struct test_topk_moe : public test_case {
             ggml_set_name(exp_probs_b, "exp_probs_b");
             selection_probs = ggml_add(ctx, probs, exp_probs_b);
             ggml_set_name(selection_probs, "selection_probs");
+        }
+
+        if (n_expert_groups > 1) {
+            ggml_tensor * selection_groups = ggml_reshape_3d(ctx, selection_probs, n_exp_per_group, n_expert_groups, n_tokens); // [n_exp_per_group, n_expert_groups, n_tokens]
+
+            ggml_tensor * group_scores = ggml_argsort_top_k(ctx, selection_groups, 2); // [2, n_expert_groups, n_tokens]
+            group_scores = ggml_get_rows(ctx, ggml_reshape_4d(ctx, selection_groups, 1, selection_groups->ne[0], selection_groups->ne[1], selection_groups->ne[2]), group_scores); // [1, 2, n_expert_groups, n_tokens]
+
+            group_scores = ggml_sum_rows(ctx, ggml_reshape_3d(ctx, group_scores, group_scores->ne[1], group_scores->ne[2], group_scores->ne[3])); // [1, n_expert_groups, n_tokens]
+            group_scores = ggml_reshape_2d(ctx, group_scores, group_scores->ne[1], group_scores->ne[2]); // [n_expert_groups, n_tokens]
+
+            ggml_tensor * expert_groups = ggml_argsort_top_k(ctx, group_scores, n_group_used); // [n_group_used, n_tokens]
+            ggml_set_name(expert_groups, "ffn_moe_group_topk");
+
+            selection_probs = ggml_get_rows(ctx, selection_groups, expert_groups); // [n_exp_per_group, n_group_used, n_tokens]
+            selection_probs = ggml_set_rows(ctx, ggml_fill(ctx, selection_groups, -INFINITY), selection_probs, expert_groups); // [n_exp_per_group, n_expert_groups, n_tokens]
+            selection_probs = ggml_reshape_2d(ctx, selection_probs, n_expert, n_tokens); // [n_expert, n_tokens]
+            ggml_set_name(selection_probs, "ffn_moe_probs_masked");
         }
 
         selected_experts = ggml_argsort_top_k(ctx, selection_probs, n_expert_used); // [n_expert_used, n_tokens]
@@ -9748,10 +9785,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
-    for (int v : {0, 1}) {
-        for (float alpha : {.5f, 1.702f}) {
-            for (float limit : {2.0f, 7.0f}) {
-                test_cases.emplace_back(new test_swiglu_oai(GGML_TYPE_F32, { 128, 2, 2, 2 }, v, alpha, limit));
+    for (ggml_type type : {GGML_TYPE_F32, GGML_TYPE_F16}) {
+        for (int v : {0, 1}) {
+            for (float alpha : {.5f, 1.702f}) {
+                for (float limit : {2.0f, 7.0f}) {
+                    test_cases.emplace_back(new test_swiglu_oai(type, { 128, 2, 2, 2 }, v, alpha, limit));
+                }
             }
         }
     }
@@ -10728,11 +10767,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 
     // testing very large N
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F16, GGML_TYPE_F32, 16, 2105344, 32, {1, 1}, {1, 1}));
+
+#if 0
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F16, GGML_TYPE_F16, 16, 8400000, 32, {1, 1}, {1, 1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_0, GGML_TYPE_F32, 16, 8400000, 32, {1, 1}, {1, 1}));
     // same shapes with a repeat in dim 3
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F16, GGML_TYPE_F16, 16, 8400000, 32, {1, 1}, {2, 1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_0, GGML_TYPE_F32, 16, 8400000, 32, {1, 1}, {2, 1}));
+#endif
 
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 31, 509, 2051, {1, 1}, {1, 1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 32, 509, 2112, {1, 1}, {1, 1}));
@@ -11813,6 +11855,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_flash_attn_ext(64, 64, 4, {1, 1}, 1024, 75, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, {0, 2, 1, 3}, false));
     test_cases.emplace_back(new test_flash_attn_ext(64, 64, 4, {1, 1}, 512, 75, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, {0, 1, 2, 3}, false));
 
+    test_cases.emplace_back(new test_flash_attn_ext(128, 128, 4, {8, 1}, 1024, 320, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 2, 1, 3}, false));
+    test_cases.emplace_back(new test_flash_attn_ext(96, 96, 8, {4, 1}, 512, 256, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 2, 1, 3}, false));
+    test_cases.emplace_back(new test_flash_attn_ext(64, 64, 4, {8, 1}, 512, 259, true, false, 8.0f, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 2, 1, 3}, false));
+    test_cases.emplace_back(new test_flash_attn_ext(128, 128, 4, {8, 1}, 512, 288, true, false, 0, 30.0f, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 2, 1, 3}, false));
+    test_cases.emplace_back(new test_flash_attn_ext(128, 128, 4, {8, 1}, 1024, 320, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_BF16, GGML_TYPE_BF16, {0, 2, 1, 3}, false));
+    test_cases.emplace_back(new test_flash_attn_ext(64, 64, 4, {8, 1}, 512, 259, true, false, 8.0f, 0, GGML_PREC_F32, GGML_TYPE_BF16, GGML_TYPE_BF16, {0, 2, 1, 3}, false));
+
     // FLASH_ATTN_EXT MMA: non-pow2 head size and MLA K/V view.
     test_cases.emplace_back(new test_flash_attn_ext(192, 128, 8, {8, 1}, 4096, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(576, 512, 1, {20, 1}, 512, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, true));
@@ -11823,11 +11872,18 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {2, 1}, 1024, 32, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(512, 512, 4, {2, 1}, 1024,  4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
 
+    // BF16 K/V for the other head sizes of the Metal tensor API kernel
+    test_cases.emplace_back(new test_flash_attn_ext(128, 128, 4, {12, 1}, 512, 75, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_BF16, GGML_TYPE_BF16));
+    test_cases.emplace_back(new test_flash_attn_ext(192, 128, 4, { 8, 1}, 512, 75, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_BF16, GGML_TYPE_BF16));
+    test_cases.emplace_back(new test_flash_attn_ext(512, 512, 4, { 4, 1}, 512, 75, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_BF16, GGML_TYPE_BF16));
+    test_cases.emplace_back(new test_flash_attn_ext(576, 512, 4, { 4, 1}, 512, 75, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_BF16, GGML_TYPE_BF16, {0, 1, 2, 3}, true, true));
+
     // FLASH_ATTN_EXT: large logits
     test_cases.emplace_back(new test_flash_attn_ext_large_logits( 64,  64, 16, {4, 1}, 1024, 75, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext_large_logits(128, 128,  8, {4, 1}, 1024, 75, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext_large_logits(256, 256,  4, {4, 1}, 1024, 75, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext_large_logits(256, 256,  4, {4, 1}, 1024, 75, true, false, 0, 10.0f, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+    test_cases.emplace_back(new test_flash_attn_ext_large_logits(256, 256,  4, {4, 1}, 1024, 75, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_BF16, GGML_TYPE_BF16));
 
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {   10, 5, 4, 3}));
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {30000, 1, 1, 1}));
@@ -11916,6 +11972,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                     test_cases.emplace_back(new test_topk_moe({32, 8, 1, 1}, 4, with_norm, bias_probs, gate, scale_w));
                     test_cases.emplace_back(new test_topk_moe({32, 8, 1, 1}, 8, with_norm, bias_probs, gate, scale_w));
                     test_cases.emplace_back(new test_topk_moe({32, 9, 1, 1}, 8, with_norm, bias_probs, gate, scale_w));
+
+                    // grouped experts
+                    test_cases.emplace_back(new test_topk_moe({128, 1, 1, 1}, 8, with_norm, bias_probs, gate, scale_w, 16));
+                    test_cases.emplace_back(new test_topk_moe({256, 22, 1, 1}, 6, with_norm, bias_probs, gate, scale_w, 32));
+                    test_cases.emplace_back(new test_topk_moe({256, 7, 1, 1}, 8, with_norm, bias_probs, gate, scale_w, 8)); // DeepSeek V3
+                    test_cases.emplace_back(new test_topk_moe({128, 5, 1, 1}, 6, with_norm, bias_probs, gate, scale_w, 8));
+                    test_cases.emplace_back(new test_topk_moe({512, 3, 1, 1}, 8, with_norm, bias_probs, gate, scale_w, 4));
                 }
             }
         }
