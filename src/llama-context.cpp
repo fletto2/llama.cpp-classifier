@@ -1407,6 +1407,36 @@ int32_t llama_context::set_moe_selection_bias(const float * bias, int32_t n_laye
                 n_layer, n_expert, (int) model.hparams.n_layer(), (int) model.hparams.n_expert);
         return -1;
     }
+    // a model with its own selection bias (exp_probs_b) gets the sum: the model's bias is folded in here, once, so the
+    // graph keeps the shape of the model without our bias (one ADD before the top-k) and the fused top-k kernels match
+    std::vector<float> sum(bias, bias + (size_t) n_layer * n_expert), native(n_expert);
+    int32_t n_folded = 0;
+    for (int32_t il = 0; il < n_layer; il++) {
+        const ggml_tensor * nb = model.layers[il].ffn_exp_probs_b;
+        if (nb == nullptr) {
+            continue;
+        }
+        const auto * tt = ggml_get_type_traits(nb->type);
+        if (ggml_nelements(nb) != n_expert || (nb->type != GGML_TYPE_F32 && tt->to_float == nullptr)) {
+            LLAMA_LOG_ERROR("%s: layer %d: cannot read the model's own selection bias (%s, %" PRId64 " values)\n",
+                    __func__, il, ggml_type_name(nb->type), ggml_nelements(nb));
+            return -1;
+        }
+        if (nb->type == GGML_TYPE_F32) {
+            ggml_backend_tensor_get(nb, native.data(), 0, ggml_nbytes(nb));
+        } else {
+            std::vector<uint8_t> raw(ggml_nbytes(nb));
+            ggml_backend_tensor_get(nb, raw.data(), 0, raw.size());
+            tt->to_float(raw.data(), native.data(), n_expert);
+        }
+        for (int32_t e = 0; e < n_expert; e++) {
+            sum[(size_t) il * n_expert + e] += native[e];
+        }
+        n_folded++;
+    }
+    if (n_folded > 0) {
+        LLAMA_LOG_INFO("%s: added to the model's own selection bias in %d layers\n", __func__, n_folded);
+    }
     if ((int32_t) moe_sel_bias.size() != n_layer) {
         ggml_init_params ip = { (size_t) n_layer * ggml_tensor_overhead(), nullptr, true };
         moe_sel_bias_ctx.reset(ggml_init(ip));
@@ -1423,7 +1453,7 @@ int32_t llama_context::set_moe_selection_bias(const float * bias, int32_t n_laye
         sched_need_reserve = true;
     }
     for (int32_t il = 0; il < n_layer; il++) {
-        ggml_backend_tensor_set(moe_sel_bias[il], bias + (size_t) il * n_expert, 0, (size_t) n_expert * sizeof(float));
+        ggml_backend_tensor_set(moe_sel_bias[il], sum.data() + (size_t) il * n_expert, 0, (size_t) n_expert * sizeof(float));
     }
     return 0;
 }

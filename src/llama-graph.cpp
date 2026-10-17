@@ -2181,10 +2181,16 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
          ggml_tensor * selected_experts_in,
          ggml_tensor * post_exp_norm,
                float   post_exp_norm_eps) const {
-    // llama_set_moe_selection_bias: a context-level selection bias for models without their own exp_probs_b
-    if (exp_probs_b == nullptr && moe_sel_bias != nullptr && il >= 0 && (size_t) il < moe_sel_bias->size() &&
+    // llama_set_moe_selection_bias: a context-level selection bias, added to the model's own exp_probs_b if it has one
+    if (moe_sel_bias != nullptr && il >= 0 && (size_t) il < moe_sel_bias->size() &&
             (*moe_sel_bias)[il] != nullptr && (*moe_sel_bias)[il]->ne[0] == n_expert) {
-        exp_probs_b = (*moe_sel_bias)[il];
+        ggml_tensor * sel = (*moe_sel_bias)[il];
+        if (exp_probs_b == nullptr ||
+                (layers != nullptr && (size_t) il < layers->size() && exp_probs_b == (*layers)[il].ffn_exp_probs_b)) {
+            exp_probs_b = sel;  // the model's own bias is already folded in (llama_context::set_moe_selection_bias)
+        } else {
+            exp_probs_b = ggml_add(ctx0, exp_probs_b, sel);  // another bias (e.g. deepseek4's image-token bias)
+        }
     }
     const int64_t n_embd   = cur->ne[0];
     const int64_t n_tokens = cur->ne[1];

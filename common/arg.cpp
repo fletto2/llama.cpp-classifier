@@ -2793,7 +2793,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--moe-selection-bias"}, "FNAME",
         "expert selection bias for MoE layers: a raw float32 file of n_layer x n_expert values, added to the router\n"
-        "probabilities for choosing the experts only (their weights are unchanged); e.g. to favour the experts kept in a cache",
+        "probabilities for choosing the experts only (their weights are unchanged), on top of the model's own selection\n"
+        "bias if it has one; e.g. to favour the experts kept in a cache",
         [](common_params & params, const std::string & value) {
             params.moe_selection_bias = value;
         }
