@@ -3409,6 +3409,26 @@ int32_t llama_model_n_embd_inp(const llama_model * model) {
     return model->hparams.n_embd_inp();
 }
 
+int32_t llama_model_token_embd_row(const llama_model * model, llama_token token, float * out, int32_t n_out) {
+    const ggml_tensor * t = model->tok_embd;
+    if (t == nullptr || t->buffer == nullptr || token < 0 || token >= t->ne[1] || n_out < t->ne[0]) {
+        return -1;
+    }
+    const size_t rs = t->nb[1];
+    std::vector<uint8_t> buf(rs);
+    ggml_backend_tensor_get(t, buf.data(), (size_t) token * rs, rs);
+    if (t->type == GGML_TYPE_F32) {
+        memcpy(out, buf.data(), t->ne[0] * sizeof(float));
+    } else {
+        const auto * tr = ggml_get_type_traits(t->type);
+        if (tr->to_float == nullptr) {
+            return -1;
+        }
+        tr->to_float(buf.data(), out, t->ne[0]);
+    }
+    return (int32_t) t->ne[0];
+}
+
 int32_t llama_model_n_embd_out(const llama_model * model) {
     return model->hparams.n_embd_out();
 }

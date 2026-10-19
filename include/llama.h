@@ -601,6 +601,10 @@ extern "C" {
     LLAMA_API int32_t llama_model_n_embd       (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_embd_inp   (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_embd_out   (const struct llama_model * model);
+    // the input embedding row of a token (token_embd, dequantized to float, without any architecture-specific scaling),
+    // written to out[0..n_out); returns the row width, or -1 for an invalid token, a missing or unsupported tensor, or
+    // n_out smaller than the row
+    LLAMA_API int32_t llama_model_token_embd_row(const struct llama_model * model, llama_token token, float * out, int32_t n_out);
     // width of the MTP hidden state rows (llama_get_embeddings_nextn_ith, MTP draft input); equals
     // llama_model_n_embd_out except for hyper-connection models, whose MTP head reads hc * n_embd
     LLAMA_API int32_t llama_model_n_embd_nextn (const struct llama_model * model);

@@ -65,9 +65,15 @@ struct server_classifier {
     // unlabeled: texts from the same population as the inputs (or, with unlabeled_inputs, the inputs themselves); their
     // top principal direction is projected out of the inputs and the prototypes before the cosine (research/ZEROSHOT.md:
     // +0.02-0.05 AUC with 50-100 texts; the direction must come from the task's own texts, not from other text)
+    // layer 0 is the fast mode: no forward pass, every text is the average of its tokens' input embedding rows,
+    // weighted by log(N / document frequency) over the request's texts (inputs, answers, unlabeled) when idf is set,
+    // plain otherwise; pooling, template and attention do not apply, and it needs no context (research/STATIC_EMBED.md:
+    // with 20 examples per answer as good as hidden states, IDF 0.821 vs 0.81-0.82 AUC; a trained head on hidden
+    // states stays ~0.09 ahead)
     std::vector<json> classify_questions(const std::vector<llama_tokens> & items, const std::vector<question> & questions,
                                          int32_t layer, common_classifier_pooling pooling, double temperature,
-                                         const std::vector<llama_tokens> & unlabeled = {}, bool unlabeled_inputs = false);
+                                         const std::vector<llama_tokens> & unlabeled = {}, bool unlabeled_inputs = false,
+                                         bool idf = true);
 
     // pooled residuals for several inputs, decoded in one batch when they fit together (as classify_batch)
     std::vector<json> features_batch(const std::vector<llama_tokens> & items, const std::vector<int32_t> & layers,

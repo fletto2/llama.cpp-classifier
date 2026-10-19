@@ -3885,6 +3885,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--classifier-fast"},
+        "serve the fast mode of POST /classify questions (\"layer\": 0: averaged input embeddings of the input and the "
+        "answers' examples, no forward pass) without creating any classifier context",
+        [](common_params & params) {
+            params.classifier_fast = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--classifier-train"},
         "serve POST /classify/train: fit a head on labelled inputs and register it live (enables --features)",
         [](common_params & params) {

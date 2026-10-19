@@ -4,7 +4,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 
 // one early-exit context and the capture of its tapped layers
 struct server_classifier_ctx {
@@ -534,30 +537,78 @@ std::vector<json> server_classifier::features_batch(const std::vector<llama_toke
 
 std::vector<json> server_classifier::classify_questions(const std::vector<llama_tokens> & items, const std::vector<question> & questions,
                                                       int32_t layer, common_classifier_pooling pooling, double temperature,
-                                                      const std::vector<llama_tokens> & unlabeled, bool unlabeled_inputs) {
-    if (!feat) {
-        throw std::invalid_argument("questions in the request need the features context, start the server with --features");
+                                                      const std::vector<llama_tokens> & unlabeled, bool unlabeled_inputs,
+                                                      bool idf) {
+    // layer 0: averaged input embeddings, no forward pass
+    const bool emb = layer == 0;
+    if (!emb && !feat) {
+        throw std::invalid_argument("questions in the request need the features context, start the server with --features "
+                                    "(or use \"layer\": 0, which needs no context)");
     }
-    if (layer < 1 || layer > n_layer_) {
-        throw std::invalid_argument("questions: layer " + std::to_string(layer) + " is outside 1.." + std::to_string(n_layer_));
+    if (layer < 0 || layer > n_layer_) {
+        throw std::invalid_argument("questions: layer " + std::to_string(layer) + " is outside 0.." + std::to_string(n_layer_));
     }
     if (!(temperature > 0)) {
         throw std::invalid_argument("questions: the temperature must be positive");
     }
     const std::vector<int32_t> layers = {layer};
     const std::vector<common_classifier_pooling> pools = {pooling};
+    const std::string pname = emb ? (idf ? "idf" : "mean") : common_classifier_pooling_name(pooling);
+    // fast mode: token weights from the document frequencies over all of the request's texts
+    std::unordered_map<llama_token, double> wt;
+    if (emb && idf) {
+        std::unordered_map<llama_token, int> df;
+        size_t ndoc = 0;
+        auto count = [&](const llama_tokens & t) {
+            for (llama_token x : std::unordered_set<llama_token>(t.begin(), t.end())) df[x]++;
+            ndoc++;
+        };
+        for (const auto & t : items) count(t);
+        for (const auto & q : questions) for (const auto & d : q.descriptions) for (const auto & t : d) count(t);
+        for (const auto & t : unlabeled) count(t);
+        for (const auto & [x, n] : df) wt[x] = std::log((double) ndoc / (double) n);
+    }
+    const llama_vocab * vocab = llama_model_get_vocab(model);
+    std::vector<float> row(n_embd);
+    auto embed_pool = [&](const llama_tokens & t) {
+        std::vector<double> acc(n_embd, 0.0);
+        double wsum = 0.0;
+        for (int pass = 0; pass < 2 && wsum == 0.0; pass++) {
+            // the second pass (plain mean) only when every token had weight 0, e.g. a text that is in every document
+            for (llama_token x : t) {
+                if (llama_vocab_is_control(vocab, x)) continue;
+                const double w = (pass == 0 && idf) ? wt[x] : 1.0;
+                if (w == 0.0) continue;
+                if (llama_model_token_embd_row(model, x, row.data(), n_embd) != n_embd) {
+                    throw std::runtime_error("questions: layer 0 needs input embedding rows of width n_embd for this model");
+                }
+                for (int32_t j = 0; j < n_embd; j++) acc[j] += w * row[j];
+                wsum += w;
+            }
+        }
+        std::vector<float> v(n_embd, 0.0f);
+        if (wsum > 0.0) for (int32_t j = 0; j < n_embd; j++) v[j] = (float) (acc[j] / wsum);
+        return v;
+    };
     // the inputs' pooled vectors
-    std::vector<json> fx = features_batch(items, layers, pools);
-    const std::string pname = common_classifier_pooling_name(pooling);
-    // the descriptions' pooled vectors, cached by layer, pooling and tokens
+    std::vector<json> fx;
+    if (emb) {
+        for (const auto & t : items) fx.push_back(json {{"0", {{pname, embed_pool(t)}}}});
+    } else {
+        fx = features_batch(items, layers, pools);
+    }
+    // the descriptions' pooled vectors, cached by layer, pooling and tokens (in the fast mode only within the request,
+    // since the weights depend on its texts)
+    std::map<std::string, std::vector<float>> local_cache;
     auto describe = [&](const llama_tokens & t) -> const std::vector<float> & {
         std::string key = std::to_string(layer) + "|" + pname + "|";
         for (llama_token x : t) key += std::to_string(x) + ",";
-        auto it = desc_cache.find(key);
-        if (it == desc_cache.end()) {
-            const std::vector<float> v = features_raw(t, layers, pools);
-            if (desc_cache.size() > 4096) desc_cache.clear();
-            it = desc_cache.emplace(key, v).first;
+        auto & cache = emb ? local_cache : desc_cache;
+        auto it = cache.find(key);
+        if (it == cache.end()) {
+            const std::vector<float> v = emb ? embed_pool(t) : features_raw(t, layers, pools);
+            if (cache.size() > 4096) cache.clear();
+            it = cache.emplace(key, v).first;
         }
         return it->second;
     };

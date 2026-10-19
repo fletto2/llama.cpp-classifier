@@ -1246,7 +1246,8 @@ private:
 
         vocab = llama_model_get_vocab(model_tgt);
 
-        if (!params_base.classifier_heads.empty() || params_base.classifier_features || params_base.classifier_options) {
+        if (!params_base.classifier_heads.empty() || params_base.classifier_features || params_base.classifier_options ||
+            params_base.classifier_fast) {
             try {
                 classifier = std::make_unique<server_classifier>();
                 classifier->init(model_tgt, params_base.classifier_heads, params_base.classifier_n_ctx,
@@ -3228,7 +3229,7 @@ private:
                     const bool has_q = task.questions.is_object() && task.questions.contains("questions");
                     if (!classifier || (!classifier->enabled() && !has_q)) {
                         send_error(task.id, "no classifier heads are loaded and no questions were given; start the server with --classifier, "
-                                            "or send \"questions\" (with --features)", ERROR_TYPE_NOT_SUPPORTED);
+                                            "or send \"questions\" (with --features, or \"layer\": 0 with --classifier-fast)", ERROR_TYPE_NOT_SUPPORTED);
                         break;
                     }
                     // the answer of one task, in its request's shape (an array for several inputs, else one object)
@@ -3360,12 +3361,19 @@ private:
                                 }
                                 qs.push_back(std::move(one));
                             }
+                            const int32_t layer = task.questions.value("layer", (2 * classifier->n_layer() + 2) / 3);
+                            // layer 0 (fast mode, no forward pass): "pooling" is "idf" (default) or "mean"
                             common_classifier_pooling pool = COMMON_CLASSIFIER_POOL_MEAN1;
-                            const std::string pname = task.questions.value("pooling", std::string("mean1"));
-                            if (!common_classifier_pooling_from_name(pname, pool)) {
+                            bool idf = true;
+                            const std::string pname = task.questions.value("pooling", std::string(layer == 0 ? "idf" : "mean1"));
+                            if (layer == 0) {
+                                if (pname != "idf" && pname != "mean") {
+                                    throw std::invalid_argument("unknown pooling '" + pname + "' for layer 0 (idf, mean)");
+                                }
+                                idf = pname == "idf";
+                            } else if (!common_classifier_pooling_from_name(pname, pool)) {
                                 throw std::invalid_argument("unknown pooling '" + pname + "' (mean, mean1, last)");
                             }
-                            const int32_t layer = task.questions.value("layer", (2 * classifier->n_layer() + 2) / 3);
                             // "unlabeled": texts from the inputs' population, or "inputs" to use the request's own inputs
                             std::vector<llama_tokens> unl;
                             bool unl_inputs = false;
@@ -3385,7 +3393,7 @@ private:
                             classifier->bidirectional = task.feature_bidirectional;
                             classifier->tmpl = task.feature_template;
                         struct reset_bidir { server_classifier * c; ~reset_bidir() { c->bidirectional = false; c->tmpl.clear(); } } rb{classifier.get()};
-                            qa = classifier->classify_questions(items, qs, layer, pool, task.questions.value("temperature", 0.05), unl, unl_inputs);
+                            qa = classifier->classify_questions(items, qs, layer, pool, task.questions.value("temperature", 0.05), unl, unl_inputs, idf);
                         }
                         std::vector<json> ha(items.size(), json::object());
                         if (classifier->enabled() && !task.questions.value("questions_only", false)) {
@@ -6552,7 +6560,10 @@ void server_routes::init_routes() {
         {
             std::vector<server_task> tasks;
             if (batched && (type == SERVER_TASK_TYPE_CLASSIFY || type == SERVER_TASK_TYPE_FEATURES)) {
-                // pack consecutive inputs into tasks that fit the classifier context together
+                // pack consecutive inputs into tasks that fit the classifier context together; questions at layer 0 (the
+                // fast mode) run no context and keep all inputs in one task, so the IDF weights count every input
+                const bool fast = qjson.is_object() && qjson.contains("layer") && qjson.at("layer").is_number_integer() &&
+                                  qjson.at("layer").get<int>() == 0;
                 for (size_t i = 0; i < items.size(); ) {
                     server_task task(type);
                     task.id    = rd.get_new_id();
@@ -6563,8 +6574,8 @@ void server_routes::init_routes() {
                     task.feature_template = tmpl;
                     task.questions        = qjson;
                     int64_t n_total = 0;
-                    while (i < items.size() && task.tokens_classify_batch.size() < SERVER_CLASSIFIER_MAX_SEQ &&
-                           (task.tokens_classify_batch.empty() || n_total + (int64_t) items[i].size() <= params.classifier_n_ctx)) {
+                    while (i < items.size() && (fast || (task.tokens_classify_batch.size() < SERVER_CLASSIFIER_MAX_SEQ &&
+                           (task.tokens_classify_batch.empty() || n_total + (int64_t) items[i].size() <= params.classifier_n_ctx)))) {
                         n_total += (int64_t) items[i].size();
                         if (!terms.empty()) task.terms.push_back(terms[i]);
                         task.tokens_classify_batch.push_back(std::move(items[i++]));

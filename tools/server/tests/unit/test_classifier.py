@@ -228,6 +228,35 @@ def test_classify_questions_unlabeled(meta):
     assert server.make_request("POST", "/classify", data={"input": "x", "questions": q, "unlabeled": 5}).status_code == 400
 
 
+def test_classify_questions_fast(meta):
+    # "layer": 0: averaged input embeddings, no forward pass and no context (checked against an offline numpy
+    # computation to 2e-8 on Qwen3-8B, research/STATIC_EMBED.md)
+    server.extra_args = ["--classifier-fast"]
+    server.start()
+    q = {"mood": {"type": "noul", "true": ["they laughed and played", "a fun day with friends"],
+                  "false": ["he cried alone", "the dog died"]}}
+    texts = ["The little cat played with the dog in the park.", "She baked bread for her friends.", "The boat sailed away.",
+             "He lost his keys and cried."]
+    for pooling in ("idf", "mean"):
+        res = server.make_request("POST", "/classify", data={"input": texts, "questions": q, "layer": 0, "pooling": pooling})
+        assert res.status_code == 200 and len(res.body) == len(texts)
+        for r in res.body:
+            a = r["answers"]["mood"]
+            assert 0.0 <= a["noul"] <= 1.0 and a["method"] == "similarity"
+            assert a["similarity"]["true"] == pytest.approx(-a["similarity"]["false"], abs=1e-9)
+    # plain mean does not depend on the other inputs: one input alone gives the same answer as in the batch
+    batch = server.make_request("POST", "/classify", data={"input": texts, "questions": q, "layer": 0, "pooling": "mean"})
+    one = server.make_request("POST", "/classify", data={"input": texts[0], "questions": q, "layer": 0, "pooling": "mean"})
+    assert one.body["answers"]["mood"]["noul"] == pytest.approx(batch.body[0]["answers"]["mood"]["noul"], abs=1e-9)
+    # more inputs than one batch of the context modes stay in one request (the IDF weights count all of them)
+    many = [texts[i % len(texts)] + f" ({i})" for i in range(100)]
+    res = server.make_request("POST", "/classify", data={"input": many, "questions": q, "layer": 0})
+    assert res.status_code == 200 and len(res.body) == 100
+    # errors: a context layer needs --features; pooling for layer 0 is idf or mean
+    assert server.make_request("POST", "/classify", data={"input": "x", "questions": q, "layer": 3}).status_code == 400
+    assert server.make_request("POST", "/classify", data={"input": "x", "questions": q, "layer": 0, "pooling": "last"}).status_code == 400
+
+
 def test_features_bidirectional(meta):
     # "attention": "bidirectional" runs the features context without the causal mask for that request only
     server.extra_args = ["--features"]

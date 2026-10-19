@@ -158,8 +158,8 @@ Request fields:
 
 | field | values | default | what it does |
 |---|---|---|---|
-| `layer` | 1..n_layer | 2/3 of the depth | the layer read |
-| `pooling` | `mean1`, `mean`, `last` | `mean1` | how the tokens are pooled (`mean1` skips the first token) |
+| `layer` | 0..n_layer | 2/3 of the depth | the layer read; 0 is the fast mode, see below |
+| `pooling` | `mean1`, `mean`, `last`; at layer 0 `idf`, `mean` | `mean1`; at layer 0 `idf` | how the tokens are pooled (`mean1` skips the first token) |
 | `template` | `echo`, `prompteol`, `none` | `echo` | how the text is presented, see below |
 | `unlabeled` | array of texts, or `"inputs"` | none | removes the main shared direction, see below |
 | `attention` | `causal`, `bidirectional` | `causal` | attention mask, see below |
@@ -172,6 +172,8 @@ Templates:
 - `none`: the text as is.
 
 `unlabeled`: give 50–100 texts of the same kind as the inputs, or `"inputs"` to use all inputs of the request. Their top principal direction is removed from inputs and answers before the cosine. Texts of another kind do not work.
+
+Fast mode, `"layer": 0`: no forward pass. Each text (input, description or example) is the average of its tokens' input embedding rows, weighted by log(N / document frequency) over all texts of the request (`idf`), or unweighted (`mean`). It needs no classifier context: start the server with `--classifier-fast` (or any other classifier option). All inputs of a request are answered together, so the weights count every input; `template` and `attention` do not apply. With a handful of examples per answer it can match the hidden-state questions on a fine decision; with descriptions only, or where word order decides, read a layer instead.
 
 `attention: "bidirectional"`: every token sees the whole input, as in an encoder. The model was trained causally, so this usually costs some accuracy; it is there to try. Each input must fit in `--classifier-ubatch` tokens. Trained heads always run causally.
 
