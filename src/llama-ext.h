@@ -166,6 +166,9 @@ LLAMA_API bool llama_adapter_lora_save(const struct llama_adapter_lora * adapter
 // The parameter flags are cleared again when the training context is freed.
 LLAMA_API bool llama_opt_param_filter_lora(const struct ggml_tensor * tensor, void * userdata);
 
+// Label of option i of a decision model ("<arch>.decision.labels"), nullptr past the last one
+LLAMA_API const char * llama_model_decision_label(const struct llama_model * model, uint32_t i);
+
 // mirrors:
 // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
 LLAMA_API float * llama_get_embeddings_nextn(struct llama_context * ctx);
