@@ -1,14 +1,18 @@
 # llama.cpp-classifier
 
-This is [llama.cpp](https://github.com/ggml-org/llama.cpp) plus a few small patches:
+This is [llama.cpp](https://github.com/ggml-org/llama.cpp), kept in sync with upstream by merges, plus these patches:
 
 - **Per-context early exit:** a classifier and text generation can share one loaded model.
 - **LoRA training:** train a LoRA adapter in C/C++ on a frozen base model, including a quantized one, on CPU or GPU, and save it as a GGUF adapter that `--lora` loads.
-- **Classifier heads** on the hidden states of the loaded model: yes/no (`noul`), multiple-choice (`choice`) and ordinal (`score`) questions. `llama-classifier` extracts features and trains heads. llama-server answers with them (`POST /classify`), returns pooled hidden states (`POST /features`) and trains new heads live (`POST /classify/train`).
+- **Classifier heads** on the hidden states of the loaded model: yes/no (`noul`), multiple-choice (`choice`) and ordinal (`score`) questions. `llama-classifier` extracts features and trains heads. llama-server answers with them (`POST /classify`), answers questions given in the request without a head, returns pooled hidden states (`POST /features`), scores fixed answers by log-probability (`POST /options`) and trains new heads live (`POST /classify/train`).
 - **llama-server LoRA training** on the loaded model between requests (`--lora-train`, `POST /lora/train`).
+- **MoE expert routing for expert caching:** a selection bias toward chosen experts and a tail skip for non-resident ones (`--moe-selection-bias`, `--moe-resident`, `--moe-tail-skip`), for any MoE architecture.
+- **Lazy MoE experts** (`--lazy-mode experts`): expert tensors are read from the file on demand, so a MoE model larger than RAM runs without thrashing the page cache.
+- **PTQ1_0** (ggml type 143): PrismML's ternary type at group 128, ported from the [PrismML-Eng fork](https://github.com/PrismML-Eng/llama.cpp) with its authorship kept, so their Ternary Bonsai GGUFs load.
 - **CPU + integrated GPU co-processing** of Q4_0 matrix products for prompt processing on boards whose GPU shares memory with the CPU (`GGML_CPU_COPROC_VULKAN`).
 - **Bolmo / Bwen byte-level models** (arch `bolmo`): conversion, quantization and `llama-bolmo` for generation and per-byte scoring.
 - **KV-cache fold** (`llama-kv-fold`): per-channel key scales and a key offset written into the model, exact for attention, so a 4.5-bit K cache loses about 7–12× less.
+- **Smaller changes:** fixes to the server's `ngram-cache` drafter, Q8_1 input reuse and a per-fusion switch in CUDA, per-layer FFN widths for `qwen3`, embeddings output on models with an MTP block (`qwen4exp`, `deepseek4`), and a Vulkan `mul_mmq` fix. See [Other changes](#other-changes).
 
 Everything else is unchanged upstream code. For building, models, tools and the full documentation, see the [official llama.cpp README](https://github.com/ggml-org/llama.cpp/blob/master/README.md).
 
@@ -285,3 +289,54 @@ tokens of a disjoint text:
 | q5_0 / q4_0 | 5.5 / 4.5 | fold + shift | 0.012 | 96.5% |
 | q5_0 / q5_0 | 5.5 | original | 0.043 | 93.8% |
 
+
+## MoE expert routing for expert caching
+
+When only some experts fit in fast memory (VRAM, or RAM for a model larger than RAM), these options steer the router
+toward them. Both work on any MoE architecture and are ignored, with a warning, on dense models.
+
+- `--moe-selection-bias FILE`: a raw float32 file of `n_layer × n_expert` values, added to the router probabilities
+  for choosing the experts only; the weights of the chosen experts are unchanged. It adds to a model's own selection
+  bias when it has one. A file with a positive value on a set of experts and 0 elsewhere favours that set; a file
+  that keeps only a set (large negative values elsewhere) comes close to a copy of the model pruned to it (per-token
+  KL 0.009 between the two on a 512-expert model).
+- `--moe-resident FILE --moe-tail-skip N`: of the experts a token selects, those at rank ≥ N (0-based) that are not
+  resident (value ≤ 0 in the file) get weight 0. The other weights are not renormalised.
+
+## Lazy MoE experts (`--lazy-mode experts`)
+
+`--lazy-mode experts` maps every MoE expert tensor and reads it from the file on demand, with the kernel's normal
+readahead. With `--load-mode none` the other weights are read into RAM at load, so the page cache holds only experts.
+Lazily read experts are not repacked, so the CPU runs them as with `--no-repack` (KL 0.000001 against a `--no-repack`
+reference).
+
+A 501B MoE model of 134 GB on a machine with 125 GB of RAM, experts on the CPU: 3.6 s per token, against 31.6 s and a
+39-minute load with the default mmap, which thrashes.
+
+## PTQ1_0 ternary type
+
+`PTQ1_0` (ggml type 143) is PrismML's ternary format at group 128, ported from the
+[PrismML-Eng fork](https://github.com/PrismML-Eng/llama.cpp) with the original authors kept on the commits, so its
+Ternary Bonsai GGUFs load here. Ported: the codec and the generic CPU dot product, x86 SSE2/SSSE3, ARM NEON + i8mm,
+CUDA dequantization and matrix-vector products. Not ported: `PQ2_0` (type 142), Metal and Vulkan.
+
+Ternary-Bonsai-2-2B perplexity: 31.82 on CPU and 31.97 on CUDA, against 31.79 / 31.84 for its `Q2_0` file. On CUDA,
+prompt batches run about 5× slower than `Q2_0`, which has the quantized matrix-matrix kernels that `PTQ1_0` lacks here.
+
+## Other changes
+
+- **`ngram-cache` speculative drafter in llama-server:** the context cache is reset per request (a slot used to keep
+  the previous request's n-grams, so a shorter new prompt was never indexed and drafted nothing), n-grams across the
+  update boundary are indexed, and the draft length follows `--spec-draft-n-max` instead of a fixed 8.
+- **CUDA:** several matrix-vector products often read the same single-column input (Q, K, V and gates); the first one's
+  Q8_1 quantization is now kept and reused until a node writes over the input (single stream only;
+  `GGML_CUDA_NO_Q8_REUSE=1` turns it off). `GGML_CUDA_FUSION_SKIP=name,...` turns single kinds of fusion off for A/B
+  tests (`shexp`, `moered`, `gdn`, `ssmscan`, `topk`, `snake`, `multi`, `glu`, `mmscale`, `mmadd`, `rmsnorm`, `ssmconv`,
+  `unary`, `dsv4hc`).
+- **`qwen3` per-layer FFN width:** `qwen3.feed_forward_length` may be an array, so a file whose FFN layers have
+  different widths (after width pruning) loads.
+- **Embeddings on `qwen4exp` and `deepseek4`:** the MTP hidden-state width (`llama_model_n_embd_nextn`) is separate from
+  the embeddings output width, so embeddings readouts (`--embeddings`, `llama-embedding`) no longer read past the end of
+  the output and abort.
+- **Vulkan `mul_mmq`:** the compute loop no longer runs k steps past the end of the matrix, which multiplied stale shared
+  memory and returned NaN on drivers that keep earlier shared-memory contents (Raspberry Pi 5, v3dv).
