@@ -27,8 +27,28 @@ struct llama_adapter_cvec {
             int32_t il_start,
             int32_t il_end);
 
+    // residual cut after layer il (see llama_set_resid_cut); U = nullptr clears every layer
+    bool set_cut(
+            const llama_model & model,
+            int32_t il,
+            const float * U,
+            const float * mu,
+            const float * thr,
+            int32_t n_embd,
+            int32_t k);
+
 private:
     bool init(const llama_model & model);
+
+    struct cut_layer {
+        ggml_tensor * U   = nullptr; // [n_embd, k]: row j = direction j
+        ggml_tensor * Ut  = nullptr; // [k, n_embd]
+        ggml_tensor * mu  = nullptr; // [n_embd]
+        ggml_tensor * thr = nullptr; // [k]
+        ggml_context_ptr       ctx;
+        ggml_backend_buffer_ptr buf;
+    };
+    std::vector<cut_layer> cuts; // per layer, empty when no cut is set
 
     int32_t layer_start = -1;
     int32_t layer_end   = -1;

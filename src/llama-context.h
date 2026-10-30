@@ -124,6 +124,7 @@ struct llama_context {
     void set_n_layer_exit(int32_t n);
     int32_t set_moe_selection_bias(const float * bias, int32_t n_layer, int32_t n_expert);
     int32_t set_moe_tail_skip(const float * resident, int32_t n_layer, int32_t n_expert, int32_t rank_from);
+    int32_t set_resid_cut(int32_t il, const float * U, const float * mu, const float * thr, int32_t n_embd, int32_t k);
     void set_causal_attn(bool value);
     void set_warmup(bool value);
 

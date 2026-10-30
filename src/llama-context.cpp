@@ -1476,6 +1476,12 @@ int32_t llama_context::set_moe_selection_bias(const float * bias, int32_t n_laye
     return 0;
 }
 
+int32_t llama_context::set_resid_cut(int32_t il, const float * U, const float * mu, const float * thr, int32_t n_embd, int32_t k) {
+    const bool ok = cvec->set_cut(model, il, U, mu, thr, n_embd, k);
+    sched_need_reserve = true;
+    return ok ? 0 : -1;
+}
+
 int32_t llama_context::set_moe_tail_skip(const float * resident, int32_t n_layer, int32_t n_expert, int32_t rank_from) {
     moe_resident.clear();
     moe_tail_mask = nullptr;
@@ -4503,6 +4509,10 @@ void llama_set_n_layer_exit(llama_context * ctx, int32_t n) {
 
 int32_t llama_set_moe_selection_bias(llama_context * ctx, const float * bias, int32_t n_layer, int32_t n_expert) {
     return ctx->set_moe_selection_bias(bias, n_layer, n_expert);
+}
+
+int32_t llama_set_resid_cut(llama_context * ctx, int32_t il, const float * U, const float * mu, const float * thr, int32_t n_embd, int32_t k) {
+    return ctx->set_resid_cut(il, U, mu, thr, n_embd, k);
 }
 
 int32_t llama_set_moe_tail_skip(llama_context * ctx, const float * resident, int32_t n_layer, int32_t n_expert, int32_t rank_from) {

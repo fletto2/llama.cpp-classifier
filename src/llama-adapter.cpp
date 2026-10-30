@@ -31,7 +31,73 @@ ggml_tensor * llama_adapter_cvec::apply_to(ggml_context * ctx, ggml_tensor * cur
         cur = ggml_add(ctx, cur, layer_dir);
     }
 
+    if (il >= 0 && (size_t) il < cuts.size() && cuts[il].U != nullptr) {
+        // a = U^T (h - mu); h -= U (a * (|a| < thr))
+        const cut_layer & c = cuts[il];
+        ggml_tensor * a    = ggml_mul_mat(ctx, c.U, ggml_sub(ctx, cur, c.mu));
+        ggml_tensor * keep = ggml_step(ctx, ggml_neg(ctx, ggml_sub(ctx, ggml_abs(ctx, a), c.thr)));
+        cur = ggml_sub(ctx, cur, ggml_mul_mat(ctx, c.Ut, ggml_mul(ctx, a, keep)));
+    }
+
     return cur;
+}
+
+bool llama_adapter_cvec::set_cut(
+        const llama_model & model,
+        int32_t il,
+        const float * U,
+        const float * mu,
+        const float * thr,
+        int32_t n_embd,
+        int32_t k) {
+    const auto & hparams = model.hparams;
+
+    if (U == nullptr) {
+        cuts.clear();
+        return true;
+    }
+    if (n_embd != (int) hparams.n_embd || il < 0 || il >= (int) hparams.n_layer() || k <= 0 || k > n_embd ||
+            mu == nullptr || thr == nullptr) {
+        LLAMA_LOG_ERROR("%s: invalid residual cut for layer %d (n_embd %d, k %d)\n", __func__, il, n_embd, k);
+        return false;
+    }
+    if (cuts.empty()) {
+        cuts.resize(hparams.n_layer());
+    }
+
+    ggml_init_params params = {
+        /*.mem_size   =*/ 4*ggml_tensor_overhead(),
+        /*.mem_buffer =*/ NULL,
+        /*.no_alloc   =*/ true,
+    };
+    cut_layer c;
+    c.ctx.reset(ggml_init(params));
+    if (!c.ctx) {
+        return false;
+    }
+    c.U   = ggml_new_tensor_2d(c.ctx.get(), GGML_TYPE_F32, n_embd, k);
+    c.Ut  = ggml_new_tensor_2d(c.ctx.get(), GGML_TYPE_F32, k, n_embd);
+    c.mu  = ggml_new_tensor_1d(c.ctx.get(), GGML_TYPE_F32, n_embd);
+    c.thr = ggml_new_tensor_1d(c.ctx.get(), GGML_TYPE_F32, k);
+    c.buf.reset(ggml_backend_alloc_ctx_tensors_from_buft(c.ctx.get(), model.select_buft(il)));
+    if (!c.buf) {
+        LLAMA_LOG_ERROR("%s: failed to allocate buffer for the residual cut\n", __func__);
+        return false;
+    }
+
+    std::vector<float> ut((size_t) n_embd * k);
+    for (int j = 0; j < k; j++) {
+        for (int i = 0; i < n_embd; i++) {
+            ut[(size_t) i * k + j] = U[(size_t) j * n_embd + i];
+        }
+    }
+    ggml_backend_tensor_set(c.U,   U,         0, ggml_nbytes(c.U));
+    ggml_backend_tensor_set(c.Ut,  ut.data(), 0, ggml_nbytes(c.Ut));
+    ggml_backend_tensor_set(c.mu,  mu,        0, ggml_nbytes(c.mu));
+    ggml_backend_tensor_set(c.thr, thr,       0, ggml_nbytes(c.thr));
+    cuts[il] = std::move(c);
+
+    return true;
 }
 
 bool llama_adapter_cvec::init(const llama_model & model) {

@@ -2738,6 +2738,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_MOE_CACHE_MIB"));
     add_opt(common_arg(
+        {"--resid-cut"}, "FNAME",
+        "residual cut: a GGUF of F32 tensors rcut.U.<il> (k directions of n_embd, orthonormal), rcut.mu.<il> (n_embd)\n"
+        "and rcut.thr.<il> (k) per layer; after layer il the component a = U^T (h - mu) is removed from tokens with\n"
+        "|a| < thr, outliers keep it (e.g. to remove a language's direction from ordinary tokens only)",
+        [](common_params & params, const std::string & value) {
+            params.resid_cut = value;
+        }
+    ).set_env("LLAMA_ARG_RESID_CUT"));
+    add_opt(common_arg(
         {"--moe-selection-bias"}, "FNAME",
         "expert selection bias for MoE layers: a raw float32 file of n_layer x n_expert values, added to the router\n"
         "probabilities for choosing the experts only (their weights are unchanged), on top of the model's own selection\n"

@@ -1501,6 +1501,42 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
         }
     }
 
+    if (!params.resid_cut.empty()) {
+        ggml_context * cctx = nullptr;
+        gguf_init_params gp = { /*.no_alloc =*/ false, /*.ctx =*/ &cctx };
+        gguf_context * gctx = gguf_init_from_file(params.resid_cut.c_str(), gp);
+        if (!gctx) {
+            COM_ERR("%s: failed to read %s\n", __func__, params.resid_cut.c_str());
+            return res;
+        }
+        const int32_t n_embd = llama_model_n_embd(model);
+        int n_cut = 0;
+        bool ok = true;
+        for (int32_t il = 0; il < llama_model_n_layer(model) && ok; il++) {
+            ggml_tensor * U   = ggml_get_tensor(cctx, ("rcut.U."   + std::to_string(il)).c_str());
+            ggml_tensor * mu  = ggml_get_tensor(cctx, ("rcut.mu."  + std::to_string(il)).c_str());
+            ggml_tensor * thr = ggml_get_tensor(cctx, ("rcut.thr." + std::to_string(il)).c_str());
+            if (!U && !mu && !thr) {
+                continue;
+            }
+            if (!U || !mu || !thr || U->type != GGML_TYPE_F32 || mu->type != GGML_TYPE_F32 || thr->type != GGML_TYPE_F32 ||
+                    U->ne[0] != n_embd || mu->ne[0] != n_embd || thr->ne[0] != U->ne[1] ||
+                    llama_set_resid_cut(lctx, il, (const float *) U->data, (const float *) mu->data,
+                                        (const float *) thr->data, n_embd, (int32_t) U->ne[1]) != 0) {
+                COM_ERR("%s: %s: layer %d needs F32 rcut.U [k, %d], rcut.mu [%d] and rcut.thr [k]\n", __func__,
+                        params.resid_cut.c_str(), il, n_embd, n_embd);
+                ok = false;
+            }
+            n_cut++;
+        }
+        gguf_free(gctx);
+        ggml_free(cctx);
+        if (!ok) {
+            return res;
+        }
+        COM_INF("%s: residual cut from %s on %d layers\n", __func__, params.resid_cut.c_str(), n_cut);
+    }
+
     if (!params.moe_selection_bias.empty()) {
         const int32_t n_layer  = llama_model_n_layer(model);
         int32_t n_expert = 0;

@@ -165,6 +165,13 @@ LLAMA_API int32_t llama_set_moe_selection_bias(struct llama_context * ctx, const
 // not renormalised), as Strata's route tail skip. resident = NULL or rank_from < 0 turns it off. Returns 0 or -1.
 LLAMA_API int32_t llama_set_moe_tail_skip(struct llama_context * ctx, const float * resident, int32_t n_layer, int32_t n_expert, int32_t rank_from);
 
+// Residual cut after layer il (where control vectors are added): a = U^T (h - mu), h -= U (a * (|a| < thr)), i.e. the
+// component along k orthonormal directions is projected out (centred on mu) only for tokens whose coordinate lies
+// within thr; outlier tokens keep it (thr = FLT_MAX gives a plain centred projection). U holds the k directions one
+// after another (U[j * n_embd + i]), mu n_embd values, thr k values. One call per layer; U = NULL clears every layer.
+// Returns 0, or -1 if the sizes do not match the model.
+LLAMA_API int32_t llama_set_resid_cut(struct llama_context * ctx, int32_t il, const float * U, const float * mu, const float * thr, int32_t n_embd, int32_t k);
+
 // LoRA training: a new adapter with trainable F32 tensors. For every 2D weight of the repeating
 // layers whose name matches one of the targets ("blk.N.<target>.weight"), A [n_in, rank] is
 // initialised like PEFT (uniform in +-1/sqrt(n_in)) and B [rank, n_out] is zero, so the adapter
