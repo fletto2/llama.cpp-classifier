@@ -17,7 +17,10 @@
 struct llama_adapter_cvec {
     ggml_tensor * tensor_for(int il) const;
 
-    ggml_tensor * apply_to(ggml_context * ctx, ggml_tensor * cur, int  il) const;
+    // first: F32 [1, n_tokens], 1 for tokens at sequence position 0 (only used when needs_first(il))
+    ggml_tensor * apply_to(ggml_context * ctx, ggml_tensor * cur, int  il, ggml_tensor * first = nullptr) const;
+
+    bool needs_first(int il) const;
 
     bool apply(
             const llama_model & model,
@@ -37,6 +40,9 @@ struct llama_adapter_cvec {
             int32_t n_embd,
             int32_t k);
 
+    // a separate threshold for tokens at sequence position 0 (see llama_set_resid_cut_first)
+    bool set_cut_first(int32_t il, const float * thr0, int32_t k);
+
 private:
     bool init(const llama_model & model);
 
@@ -45,6 +51,11 @@ private:
         ggml_tensor * Ut  = nullptr; // [k, n_embd]
         ggml_tensor * mu  = nullptr; // [n_embd]
         ggml_tensor * thr = nullptr; // [k]
+        ggml_tensor * dthr0 = nullptr; // [k]: threshold at position 0 minus thr (optional)
+        std::vector<float> thr_host;
+        ggml_context_ptr       ctx0;
+        ggml_backend_buffer_ptr buf0;
+        ggml_backend_buffer_type_t buft = nullptr;
         ggml_context_ptr       ctx;
         ggml_backend_buffer_ptr buf;
     };

@@ -186,6 +186,19 @@ public:
     const llama_rope_section_order rope_section_order = LLAMA_ROPE_SECTION_ORDER_TYXZ;
 };
 
+// 1 for tokens at sequence position 0, else 0 (residual cut with a position-0 threshold)
+class llm_graph_input_first : public llm_graph_input_i {
+public:
+    llm_graph_input_first() = default;
+    virtual ~llm_graph_input_first() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    bool can_reuse(const llm_graph_params & params) override;
+
+    ggml_tensor * first = nullptr; // F32 [1, n_batch]
+};
+
 // temperature tuning, used by llama4
 class llm_graph_input_attn_temp : public llm_graph_input_i {
 public:
@@ -1076,6 +1089,7 @@ struct llm_graph_context {
     ggml_backend_t backend_cpu; // TODO: needed by build_attn_mha, figure out a way to remove?
 
     const llama_adapter_cvec     * cvec;
+    mutable ggml_tensor          * inp_first = nullptr; // llm_graph_input_first, built on first use
     const llama_adapter_loras    * loras;
     const llama_memory_context_i * mctx;
     const llama_cross            * cross;

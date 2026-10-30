@@ -25,7 +25,11 @@ ggml_tensor * llama_adapter_cvec::tensor_for(int il) const {
     return tensors[il];
 }
 
-ggml_tensor * llama_adapter_cvec::apply_to(ggml_context * ctx, ggml_tensor * cur, int  il) const {
+bool llama_adapter_cvec::needs_first(int il) const {
+    return il >= 0 && (size_t) il < cuts.size() && cuts[il].dthr0 != nullptr;
+}
+
+ggml_tensor * llama_adapter_cvec::apply_to(ggml_context * ctx, ggml_tensor * cur, int  il, ggml_tensor * first) const {
     ggml_tensor * layer_dir = tensor_for(il);
     if (layer_dir != nullptr) {
         cur = ggml_add(ctx, cur, layer_dir);
@@ -35,7 +39,12 @@ ggml_tensor * llama_adapter_cvec::apply_to(ggml_context * ctx, ggml_tensor * cur
         // a = U^T (h - mu); h -= U (a * (|a| < thr))
         const cut_layer & c = cuts[il];
         ggml_tensor * a    = ggml_mul_mat(ctx, c.U, ggml_sub(ctx, cur, c.mu));
-        ggml_tensor * keep = ggml_step(ctx, ggml_neg(ctx, ggml_sub(ctx, ggml_abs(ctx, a), c.thr)));
+        ggml_tensor * over = ggml_sub(ctx, ggml_abs(ctx, a), c.thr);
+        if (c.dthr0 != nullptr && first != nullptr && first->ne[1] == a->ne[1]) {
+            // position-0 tokens use thr0 = thr + dthr0
+            over = ggml_sub(ctx, over, ggml_mul(ctx, ggml_repeat(ctx, c.dthr0, a), first));
+        }
+        ggml_tensor * keep = ggml_step(ctx, ggml_neg(ctx, over));
         cur = ggml_sub(ctx, cur, ggml_mul_mat(ctx, c.Ut, ggml_mul(ctx, a, keep)));
     }
 
@@ -79,7 +88,9 @@ bool llama_adapter_cvec::set_cut(
     c.Ut  = ggml_new_tensor_2d(c.ctx.get(), GGML_TYPE_F32, k, n_embd);
     c.mu  = ggml_new_tensor_1d(c.ctx.get(), GGML_TYPE_F32, n_embd);
     c.thr = ggml_new_tensor_1d(c.ctx.get(), GGML_TYPE_F32, k);
-    c.buf.reset(ggml_backend_alloc_ctx_tensors_from_buft(c.ctx.get(), model.select_buft(il)));
+    c.buft = model.select_buft(il);
+    c.thr_host.assign(thr, thr + k);
+    c.buf.reset(ggml_backend_alloc_ctx_tensors_from_buft(c.ctx.get(), c.buft));
     if (!c.buf) {
         LLAMA_LOG_ERROR("%s: failed to allocate buffer for the residual cut\n", __func__);
         return false;
@@ -96,6 +107,42 @@ bool llama_adapter_cvec::set_cut(
     ggml_backend_tensor_set(c.mu,  mu,        0, ggml_nbytes(c.mu));
     ggml_backend_tensor_set(c.thr, thr,       0, ggml_nbytes(c.thr));
     cuts[il] = std::move(c);
+
+    return true;
+}
+
+bool llama_adapter_cvec::set_cut_first(int32_t il, const float * thr0, int32_t k) {
+    if (il < 0 || (size_t) il >= cuts.size() || cuts[il].U == nullptr || k != (int32_t) cuts[il].thr_host.size()) {
+        LLAMA_LOG_ERROR("%s: layer %d has no residual cut with %d directions\n", __func__, il, k);
+        return false;
+    }
+    cut_layer & c = cuts[il];
+    c.dthr0 = nullptr;
+    c.buf0.reset();
+    c.ctx0.reset();
+    if (thr0 == nullptr) {
+        return true;
+    }
+    ggml_init_params params = {
+        /*.mem_size   =*/ ggml_tensor_overhead(),
+        /*.mem_buffer =*/ NULL,
+        /*.no_alloc   =*/ true,
+    };
+    c.ctx0.reset(ggml_init(params));
+    if (!c.ctx0) {
+        return false;
+    }
+    ggml_tensor * t = ggml_new_tensor_1d(c.ctx0.get(), GGML_TYPE_F32, k);
+    c.buf0.reset(ggml_backend_alloc_ctx_tensors_from_buft(c.ctx0.get(), c.buft));
+    if (!c.buf0) {
+        return false;
+    }
+    std::vector<float> d(k);
+    for (int j = 0; j < k; j++) {
+        d[j] = thr0[j] - c.thr_host[j];
+    }
+    ggml_backend_tensor_set(t, d.data(), 0, ggml_nbytes(t));
+    c.dthr0 = t;
 
     return true;
 }

@@ -2741,7 +2741,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"--resid-cut"}, "FNAME",
         "residual cut: a GGUF of F32 tensors rcut.U.<il> (k directions of n_embd, orthonormal), rcut.mu.<il> (n_embd)\n"
         "and rcut.thr.<il> (k) per layer; after layer il the component a = U^T (h - mu) is removed from tokens with\n"
-        "|a| < thr, outliers keep it (e.g. to remove a language's direction from ordinary tokens only)",
+        "|a| < thr, outliers keep it (e.g. to remove a language's direction from ordinary tokens only); an optional\n"
+        "rcut.thr0.<il> (k) is the threshold for tokens at sequence position 0 (the attention sink)",
         [](common_params & params, const std::string & value) {
             params.resid_cut = value;
         }

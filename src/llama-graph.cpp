@@ -210,6 +210,21 @@ bool llm_graph_input_pos::can_reuse(const llm_graph_params & params) {
     return res;
 }
 
+void llm_graph_input_first::set_input(const llama_ubatch * ubatch) {
+    if (first) {
+        const int64_t n_tokens = ubatch->n_tokens;
+        std::vector<float> data(n_tokens, 0.0f);
+        for (int64_t i = 0; i < n_tokens; ++i) {
+            data[i] = ubatch->pos && ubatch->pos[i] == 0 ? 1.0f : 0.0f;
+        }
+        ggml_backend_tensor_set(first, data.data(), 0, n_tokens*sizeof(float));
+    }
+}
+
+bool llm_graph_input_first::can_reuse(const llm_graph_params & params) {
+    return first->ne[1] == params.ubatch.n_tokens;
+}
+
 void llm_graph_input_attn_temp::set_input(const llama_ubatch * ubatch) {
     if (ubatch->pos && attn_scale) {
         const int64_t n_tokens = ubatch->n_tokens;
@@ -1533,7 +1548,18 @@ void llm_graph_context::cb(ggml_tensor * cur, const char * name, int il) const {
 ggml_tensor * llm_graph_context::build_cvec(
          ggml_tensor * cur,
                  int   il) const {
-    return cvec->apply_to(ctx0, cur, il);
+    if (!cvec->needs_first(il)) {
+        return cvec->apply_to(ctx0, cur, il);
+    }
+    if (inp_first == nullptr) {
+        auto inp = std::make_unique<llm_graph_input_first>();
+        inp->first = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, 1, n_tokens);
+        ggml_set_input(inp->first);
+        cb(inp->first, "inp_first", -1);
+        inp_first = inp->first;
+        res->add_input(std::move(inp));
+    }
+    return cvec->apply_to(ctx0, cur, il, inp_first);
 }
 
 ggml_tensor * llm_graph_context::build_hadamard_input(

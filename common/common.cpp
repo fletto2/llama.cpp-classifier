@@ -1527,6 +1527,12 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
                         params.resid_cut.c_str(), il, n_embd, n_embd);
                 ok = false;
             }
+            ggml_tensor * thr0 = ok ? ggml_get_tensor(cctx, ("rcut.thr0." + std::to_string(il)).c_str()) : nullptr;
+            if (thr0 && (thr0->type != GGML_TYPE_F32 || thr0->ne[0] != U->ne[1] ||
+                    llama_set_resid_cut_first(lctx, il, (const float *) thr0->data, (int32_t) U->ne[1]) != 0)) {
+                COM_ERR("%s: %s: rcut.thr0.%d must be F32 [k]\n", __func__, params.resid_cut.c_str(), il);
+                ok = false;
+            }
             n_cut++;
         }
         gguf_free(gctx);

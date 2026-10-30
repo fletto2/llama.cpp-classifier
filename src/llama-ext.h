@@ -172,6 +172,11 @@ LLAMA_API int32_t llama_set_moe_tail_skip(struct llama_context * ctx, const floa
 // Returns 0, or -1 if the sizes do not match the model.
 LLAMA_API int32_t llama_set_resid_cut(struct llama_context * ctx, int32_t il, const float * U, const float * mu, const float * thr, int32_t n_embd, int32_t k);
 
+// A separate threshold (k values) for tokens at sequence position 0 (the attention sink) under layer il's residual
+// cut, e.g. 0 to spare the sink along a direction and FLT_MAX to project it; thr0 = NULL removes it. Call after
+// llama_set_resid_cut for that layer. Returns 0 or -1.
+LLAMA_API int32_t llama_set_resid_cut_first(struct llama_context * ctx, int32_t il, const float * thr0, int32_t k);
+
 // LoRA training: a new adapter with trainable F32 tensors. For every 2D weight of the repeating
 // layers whose name matches one of the targets ("blk.N.<target>.weight"), A [n_in, rank] is
 // initialised like PEFT (uniform in +-1/sqrt(n_in)) and B [rank, n_out] is zero, so the adapter
