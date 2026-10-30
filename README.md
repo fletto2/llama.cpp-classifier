@@ -7,6 +7,7 @@ This is [llama.cpp](https://github.com/ggml-org/llama.cpp), kept in sync with up
 - **Classifier heads** on the hidden states of the loaded model: yes/no (`noul`), multiple-choice (`choice`) and ordinal (`score`) questions. `llama-classifier` extracts features and trains heads. llama-server answers with them (`POST /classify`), answers questions given in the request without a head, returns pooled hidden states (`POST /features`), scores fixed answers by log-probability (`POST /options`) and trains new heads live (`POST /classify/train`).
 - **llama-server LoRA training** on the loaded model between requests (`--lora-train`, `POST /lora/train`).
 - **MoE expert routing for expert caching:** a selection bias toward chosen experts and a tail skip for non-resident ones (`--moe-selection-bias`, `--moe-resident`, `--moe-tail-skip`), for any MoE architecture.
+- **Residual cut** (`--resid-cut`): projects a few directions out of the hidden state after chosen layers, for tokens within a threshold only, on any architecture; e.g. to remove other languages' directions from a model.
 - **Lazy MoE experts** (`--lazy-mode experts`): expert tensors are read from the file on demand, so a MoE model larger than RAM runs without thrashing the page cache.
 - **PTQ1_0** (ggml type 143): PrismML's ternary type at group 128, ported from the [PrismML-Eng fork](https://github.com/PrismML-Eng/llama.cpp) with its authorship kept, so their Ternary Bonsai GGUFs load.
 - **CPU + integrated GPU co-processing** of Q4_0 matrix products for prompt processing on boards whose GPU shares memory with the CPU (`GGML_CPU_COPROC_VULKAN`).
@@ -302,6 +303,25 @@ toward them. Both work on any MoE architecture and are ignored, with a warning, 
   KL 0.009 between the two on a 512-expert model).
 - `--moe-resident FILE --moe-tail-skip N`: of the experts a token selects, those at rank ≥ N (0-based) that are not
   resident (value ≤ 0 in the file) get weight 0. The other weights are not renormalised.
+
+## Residual cut (`--resid-cut`)
+
+```c
+// after layer il: a = U^T (h - mu); h -= U (a * (|a| < thr)), U = k orthonormal directions of n_embd
+int32_t llama_set_resid_cut(struct llama_context * ctx, int32_t il, const float * U, const float * mu,
+                            const float * thr, int32_t n_embd, int32_t k);   // U = NULL clears all layers
+```
+
+`--resid-cut FILE` reads a GGUF of F32 tensors `rcut.U.<il>` (`[k, n_embd]`), `rcut.mu.<il>` (`[n_embd]`) and
+`rcut.thr.<il>` (`[k]`) for any set of layers. The component along the directions, centred on `mu`, is removed from
+every token whose coordinate lies within `thr`; tokens further out keep it, and a very large `thr` gives a plain
+centred projection. The cut is applied where control vectors are added (after each layer's residual), so every
+architecture has it, on CPU and GPU.
+
+Example: twelve directions (each script's mean hidden state minus the English mean) at blocks 27 and 28 of
+Qwen3-8B-Base with a threshold of 20 standard deviations of English, which spares only the attention-sink token:
+perplexity on Chinese and Russian text rises from 6.6 / 22.6 to about 380,000, on English news from 14.03 to 14.41,
+the Greek and Russian prompts are answered in English, and the result matches the same hook in PyTorch.
 
 ## Lazy MoE experts (`--lazy-mode experts`)
 
