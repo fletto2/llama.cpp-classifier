@@ -315,12 +315,14 @@ int32_t llama_set_resid_cut(struct llama_context * ctx, int32_t il, const float 
 `--resid-cut FILE` reads a GGUF of F32 tensors `rcut.U.<il>` (`[k, n_embd]`), `rcut.mu.<il>` (`[n_embd]`) and
 `rcut.thr.<il>` (`[k]`) for any set of layers. The component along the directions, centred on `mu`, is removed from
 every token whose coordinate lies within `thr`; tokens further out keep it, and a very large `thr` gives a plain
-centred projection. The cut is applied where control vectors are added (after each layer's residual), so every
+centred projection. An optional `rcut.thr0.<il>` (`[k]`, `llama_set_resid_cut_first`) is the threshold for tokens at
+sequence position 0, the attention sink, which often must stay untouched along most directions. The cut is applied where control vectors are added (after each layer's residual), so every
 architecture has it, on CPU and GPU.
 
 Example: twelve directions (each script's mean hidden state minus the English mean) at blocks 27 and 28 of
 Qwen3-8B-Base with a threshold of 20 standard deviations of English, which spares only the attention-sink token:
-perplexity on Chinese and Russian text rises from 6.6 / 22.6 to about 380,000, on English news from 14.03 to 14.41,
+perplexity on Chinese and Russian text rises from 6.6 / 22.6 to about 380,000 (Chinese to 4 million when the sink is
+projected along the Chinese and Japanese directions only, with `rcut.thr0`), on English news from 14.03 to 14.41,
 the Greek and Russian prompts are answered in English, and the result matches the same hook in PyTorch.
 
 ## Lazy MoE experts (`--lazy-mode experts`)
