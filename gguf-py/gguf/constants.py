@@ -6842,6 +6842,8 @@ class GGMLQuantizationType(IntEnum):
     Q2_0    = 42
     F8_E4M3 = 43
     PTQ1_0  = 143
+    IQ3_K   = 144  # Avalon's 43, ik_llama.cpp's 138
+    IQ3_KS  = 145  # Avalon's 44: ik_llama.cpp's IQ3_KS codebook with a block scale (104 B / 256)
 
 
 class ExpertGatingFuncType(IntEnum):
@@ -7077,6 +7079,8 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.Q2_0:    (64, 2 + 16),
     GGMLQuantizationType.F8_E4M3: (1, 1),
     GGMLQuantizationType.PTQ1_0:  (128, 2 + 24 + 2),
+    GGMLQuantizationType.IQ3_K:   (256, 2 + 2 + 2 + QK_K // 32 + QK_K // 4 + QK_K // 8),
+    GGMLQuantizationType.IQ3_KS:  (256, 2 + 2 + QK_K // 64 + QK_K // 4 + QK_K // 8),
 }
 
 

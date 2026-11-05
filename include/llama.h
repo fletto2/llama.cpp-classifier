@@ -160,6 +160,8 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_Q2_0          = 41, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_F8_E4M3       = 42, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_PTQ1_0    = 143, // except 1d tensors (Prism group-128 ternary, 1.75 bpw)
+        LLAMA_FTYPE_MOSTLY_IQ3_K     = 144, // except 1d tensors (ik_llama.cpp / Avalon IQ3_K, 3.44 bpw)
+        LLAMA_FTYPE_MOSTLY_IQ3_KS    = 145, // except 1d tensors (Avalon IQ3_KS, 3.25 bpw)
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };

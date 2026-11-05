@@ -436,7 +436,10 @@ extern "C" {
         // Prism-private type: a high id so it stays clear of upstream's ids (44..142 unused;
         // 142 is Prism's PQ2_0, which this tree does not carry).
         GGML_TYPE_PTQ1_0 = 143, // Prism-private ternary, group 128
-        GGML_TYPE_COUNT   = 144,
+        // Avalon's IQ3_K / IQ3_KS (ids 43 / 44 there, which clash with upstream's F8_E4M3 here)
+        GGML_TYPE_IQ3_K   = 144, // ik_llama.cpp's IQ3_K (type 138 there): same block and grid
+        GGML_TYPE_IQ3_KS  = 145, // ik_llama.cpp's IQ3_KS codebook and layout, a block scale instead of its row scale (104 B / 256)
+        GGML_TYPE_COUNT   = 146,
     };
 
     // [TAG_GGML_PREC]
