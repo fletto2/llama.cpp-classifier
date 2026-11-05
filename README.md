@@ -10,6 +10,7 @@ This is [llama.cpp](https://github.com/ggml-org/llama.cpp), kept in sync with up
 - **Residual cut** (`--resid-cut`): projects a few directions out of the hidden state after chosen layers, for tokens within a threshold only, on any architecture; e.g. to remove other languages' directions from a model.
 - **Lazy MoE experts** (`--lazy-mode experts`): expert tensors are read from the file on demand, so a MoE model larger than RAM runs without thrashing the page cache.
 - **PTQ1_0** (ggml type 143): PrismML's ternary type at group 128, ported from the [PrismML-Eng fork](https://github.com/PrismML-Eng/llama.cpp) with its authorship kept, so their Ternary Bonsai GGUFs load.
+- **IQ3_K / IQ3_KS** (ggml types 144 / 145): the 3-bit types of ik_llama.cpp as carried by [Avalon](https://github.com/freriadoc/Avalon) (MIT), with codec, CPU, CUDA and HIP paths (no Vulkan or Metal), so Avalon's Qwen3.8-Flash-Next files load here after renumbering the types and unpacking the experts.
 - **CPU + integrated GPU co-processing** of Q4_0 matrix products for prompt processing on boards whose GPU shares memory with the CPU (`GGML_CPU_COPROC_VULKAN`).
 - **Bolmo / Bwen byte-level models** (arch `bolmo`): conversion, quantization and `llama-bolmo` for generation and per-byte scoring.
 - **KV-cache fold** (`llama-kv-fold`): per-channel key scales and a key offset written into the model, exact for attention, so a 4.5-bit K cache loses about 7–12× less.
