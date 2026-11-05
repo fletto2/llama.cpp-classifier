@@ -1590,3 +1590,154 @@ static __device__ __forceinline__ float vec_dot_iq4_xs_q8_1(
     const float d = __half2float(bq4->d) * __low2float(bq8_1[iqs/4].ds);
     return d * sumi;
 }
+
+// a byte of lo (selector 0-3) or hi (4-7) per byte of sel (each byte of sel at most 7)
+static __device__ __forceinline__ int ggml_cuda_perm8(const uint32_t hi, const uint32_t lo, const uint32_t sel) {
+#if defined(GGML_USE_HIP)
+    return (int) __builtin_amdgcn_perm(hi, lo, sel);
+#else
+    return (int) __byte_perm(lo, hi, (sel & 0x7) | ((sel >> 4) & 0x70) | ((sel >> 8) & 0x700) | ((sel >> 12) & 0x7000));
+#endif // defined(GGML_USE_HIP)
+}
+
+// iq3_k (ik_llama.cpp's vec_dot_iq3_k_q8_1): a thread takes 8 weights in each of the 4 blocks of 32 of
+// one half of the super-block; the 3-bit index and the grid bit (extra) form a nibble for the table
+// of 16 (the grid, then the shifted grid)
+#define VDR_IQ3_K_Q8_1_MMVQ 4
+#define VDR_IQ3_K_Q8_1_MMQ  4
+
+static __device__ __forceinline__ float vec_dot_iq3_k_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iiqs) {
+    const block_iq3_k * bq3 = (const block_iq3_k *) vbq + kbx;
+
+    const int iqs   = iiqs/4;
+    const int ib128 = iqs/4;  // 0 or 1: weights 0...127 or 128...255
+    const int il8   = iqs%4;  // 0...3: weights 8*il8...8*il8+7 of each block of 32
+    const int shift = 4*(il8/2);
+
+    const uint16_t * ql = (const uint16_t *)bq3->qs + 16*ib128 + 4*il8;
+    const uint16_t * qh = (const uint16_t *)bq3->qh + 4*il8;
+
+    uint32_t aux32;
+    const uint8_t * aux8 = (const uint8_t *)&aux32;
+
+    const int hshift = 4*(1-ib128);
+    const uint16_t sh = bq3->scales_h >> (8*ib128 + il8/2);
+
+    // the grid bit is the same for the 16 weights of a block, and each 4 weights a thread takes lie in one block: the
+    // half of the table (grid or shifted grid) is chosen once per block, then one byte permute per 4 weights on the
+    // 3-bit index (2 bits of qs, 1 of qh)
+    const uint8_t extra = bq3->extra >> (8*ib128 + il8/2);
+    const uint32_t * tab = (const uint32_t *) iq3nl_values;
+    const uint32_t t0 = tab[0], t1 = tab[1], t2 = tab[2], t3 = tab[3];
+    uint32_t lo[4], hi[4];
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const bool g = (extra >> (2*j)) & 1;
+        lo[j] = g ? t2 : t0;
+        hi[j] = g ? t3 : t1;
+    }
+
+    const int * q8;
+    int sumi[4] = {0, 0, 0, 0};
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+        const uint32_t vl = ql[2*i+0] | (ql[2*i+1] << 16);
+        const uint32_t vh = ((qh[2*i+0] | (qh[2*i+1] << 16)) << hshift);
+
+        const uint32_t i0 = ((vl >> 0) & 0x03030303) | ((vh >> 2) & 0x04040404);
+        const uint32_t i1 = ((vl >> 2) & 0x03030303) | ((vh >> 3) & 0x04040404);
+        const uint32_t i2 = ((vl >> 4) & 0x03030303) | ((vh >> 4) & 0x04040404);
+        const uint32_t i3 = ((vl >> 6) & 0x03030303) | ((vh >> 5) & 0x04040404);
+
+        q8 = (const int *)bq8_1[4*ib128+0].qs + 2*il8;
+        sumi[0] = ggml_cuda_dp4a(ggml_cuda_perm8(hi[0], lo[0], i0), q8[i], sumi[0]);
+
+        q8 += sizeof(block_q8_1)/4;
+        sumi[1] = ggml_cuda_dp4a(ggml_cuda_perm8(hi[1], lo[1], i1), q8[i], sumi[1]);
+
+        q8 += sizeof(block_q8_1)/4;
+        sumi[2] = ggml_cuda_dp4a(ggml_cuda_perm8(hi[2], lo[2], i2), q8[i], sumi[2]);
+
+        q8 += sizeof(block_q8_1)/4;
+        sumi[3] = ggml_cuda_dp4a(ggml_cuda_perm8(hi[3], lo[3], i3), q8[i], sumi[3]);
+    }
+    const float d = __half2float(bq3->d);
+    const uint16_t * sl16 = (const uint16_t *)bq3->scales_l + 2*ib128;
+    aux32 = ((((sl16[0] | (sl16[1] << 16)) >> shift) & 0x0f0f0f0f) << 1) | 0x01010101;
+    return d * (__low2float(bq8_1[4*ib128+0].ds) * aux8[0] * (sh & 0x01 ? -1 : 1) * sumi[0] +
+                __low2float(bq8_1[4*ib128+1].ds) * aux8[1] * (sh & 0x04 ? -1 : 1) * sumi[1] +
+                __low2float(bq8_1[4*ib128+2].ds) * aux8[2] * (sh & 0x10 ? -1 : 1) * sumi[2] +
+                __low2float(bq8_1[4*ib128+3].ds) * aux8[3] * (sh & 0x40 ? -1 : 1) * sumi[3]);
+}
+
+// iq3_ks (ik_llama.cpp's vec_dot_iq3_ks_q8_1 with the scale read from the block): a thread takes 8 weights in each of
+// the 4 blocks of 32 of one half of the super-block; the 3-bit index and the block's grid bit form a nibble for the
+// table of 16; the signed 5-bit scale of each block of 32
+#define VDR_IQ3_KS_Q8_1_MMVQ 4
+#define VDR_IQ3_KS_Q8_1_MMQ  4
+
+static __device__ __forceinline__ float vec_dot_iq3_ks_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iiqs) {
+    const block_iq3_ks * bq3 = (const block_iq3_ks *) vbq + kbx;
+
+    const int iqs   = iiqs/4;
+    const int ib128 = iqs/4;  // 0 or 1: weights 0...127 or 128...255
+    const int il8   = iqs%4;  // 0...3: weights 8*il8...8*il8+7 of each block of 32
+
+    // a block is 104 bytes: d, extra and the scales in one 8-byte load, qs and qh in 4-byte loads
+    const uint2 head = *(const uint2 *) bq3;
+    const uint32_t extra = (head.x >> 16) >> 4*ib128;
+    const int * ql = (const int *) bq3->qs + 8*ib128 + 2*il8;
+    const int * qh = (const int *) bq3->qh + 2*il8;
+
+    // the grid bit is the same for the 32 weights of a block, and each 4 weights a thread takes lie in one block: the
+    // half of the table (grid or shifted grid) is chosen once per block, then one byte permute per 4 weights on the
+    // 3-bit index (2 bits of qs, 1 of qh)
+    const uint32_t * tab = (const uint32_t *) iq3nl_values;
+    const uint32_t t0 = tab[0], t1 = tab[1], t2 = tab[2], t3 = tab[3];
+    uint32_t lo[4], hi[4];
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const bool g = (extra >> (8 + j)) & 1;
+        lo[j] = g ? t2 : t0;
+        hi[j] = g ? t3 : t1;
+    }
+
+    const int * q8;
+    int sumi[4] = {0, 0, 0, 0};
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+        const uint32_t vl = ql[i];
+        const uint32_t vh = (uint32_t) qh[i] >> 4*ib128;
+
+        // blocks 0 and 2 from the low and high crumb pairs of each nibble pair, 1 and 3 likewise shifted by 2
+        const uint32_t i0 = ((vl >> 0) & 0x03030303) | ((vh << 2) & 0x04040404);
+        const uint32_t i1 = ((vl >> 2) & 0x03030303) | ((vh << 1) & 0x04040404);
+        const uint32_t i2 = ((vl >> 4) & 0x03030303) | ((vh >> 0) & 0x04040404);
+        const uint32_t i3 = ((vl >> 6) & 0x03030303) | ((vh >> 1) & 0x04040404);
+
+        q8 = (const int *)bq8_1[4*ib128+0].qs + 2*il8;
+        sumi[0] = ggml_cuda_dp4a(ggml_cuda_perm8(hi[0], lo[0], i0), q8[i], sumi[0]);
+
+        q8 += sizeof(block_q8_1)/4;
+        sumi[1] = ggml_cuda_dp4a(ggml_cuda_perm8(hi[1], lo[1], i1), q8[i], sumi[1]);
+
+        q8 += sizeof(block_q8_1)/4;
+        sumi[2] = ggml_cuda_dp4a(ggml_cuda_perm8(hi[2], lo[2], i2), q8[i], sumi[2]);
+
+        q8 += sizeof(block_q8_1)/4;
+        sumi[3] = ggml_cuda_dp4a(ggml_cuda_perm8(hi[3], lo[3], i3), q8[i], sumi[3]);
+    }
+    const float d = __half2float(__ushort_as_half((unsigned short) (head.x & 0xffff)));
+    // the 4 scales of this half at once: the nibbles, bit 4 from extra bits 0-3 (spread to one bit per byte), minus 16
+    const uint32_t sc = ((head.y >> 4*ib128) & 0x0f0f0f0f) | ((((extra & 0x0f) * 0x00204081) & 0x01010101) << 4);
+    const int ls0 = (int) ((sc >>  0) & 0xff) - 16;
+    const int ls1 = (int) ((sc >>  8) & 0xff) - 16;
+    const int ls2 = (int) ((sc >> 16) & 0xff) - 16;
+    const int ls3 = (int) ((sc >> 24) & 0xff) - 16;
+    return d * (__low2float(bq8_1[4*ib128+0].ds) * ls0 * sumi[0] +
+                __low2float(bq8_1[4*ib128+1].ds) * ls1 * sumi[1] +
+                __low2float(bq8_1[4*ib128+2].ds) * ls2 * sumi[2] +
+                __low2float(bq8_1[4*ib128+3].ds) * ls3 * sumi[3]);
+}
