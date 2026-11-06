@@ -328,6 +328,16 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
     }
     // k-quants cost more to decode and mvq redoes that per column, so MMQ wins sooner.
     // Only list quant-types MMQ supports, others would fall back to cuBLAS.
+    if (GGML_CUDA_CC_IS_RDNA3_0(cc)) {
+        switch (type) { // tuned on RX 7900 XTX
+            case GGML_TYPE_Q4_K:
+                return ne11 <= 5;
+            case GGML_TYPE_Q5_K:
+                return ne11 <= 6;
+            default:
+                return ne11 <= MMVQ_MAX_BATCH_SIZE;
+        }
+    }
     if (GGML_CUDA_CC_IS_NVIDIA(cc) && cc == GGML_CUDA_CC_ADA_LOVELACE) {
         switch (type) { // tuned on RTX 4090
             case GGML_TYPE_Q2_K:
