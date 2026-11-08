@@ -1554,6 +1554,12 @@ class MODEL_TENSOR(IntEnum):
     DFLASH_ATTN_K_CTX      = auto()  # per-layer context K projection
     DFLASH_ATTN_V_CTX      = auto()  # per-layer context V projection
     DFLASH_ATTN_K_CTX_NORM = auto()
+    DSPINE_CODEBOOK        = auto()
+    DSPINE_GATE            = auto()
+    DSPINE_PRED_GATE       = auto()
+    DSPINE_PREV            = auto()
+    DSPINE_READ            = auto()
+    DSPINE_WRITE           = auto()
     LILICORR_TOKEN_PROJ           = auto()
     LILICORR_PASS_HIDDEN_PROJ     = auto()
     LILICORR_SLOT_EMBD            = auto()
@@ -2637,6 +2643,12 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.DFLASH_ATTN_K_CTX:         "blk.{bid}.attn_k_ctx",
     MODEL_TENSOR.DFLASH_ATTN_V_CTX:         "blk.{bid}.attn_v_ctx",
     MODEL_TENSOR.DFLASH_ATTN_K_CTX_NORM:    "blk.{bid}.attn_k_ctx_norm",
+    MODEL_TENSOR.DSPINE_CODEBOOK:           "dspine_codebook",
+    MODEL_TENSOR.DSPINE_GATE:               "dspine_gate",
+    MODEL_TENSOR.DSPINE_PRED_GATE:          "dspine_pred_gate",
+    MODEL_TENSOR.DSPINE_PREV:               "dspine_prev",
+    MODEL_TENSOR.DSPINE_READ:               "blk.{bid}.dspine_read",
+    MODEL_TENSOR.DSPINE_WRITE:              "blk.{bid}.dspine_write",
     MODEL_TENSOR.LILICORR_TOKEN_PROJ:                   "lilicorr.token_proj",
     MODEL_TENSOR.LILICORR_PASS_HIDDEN_PROJ:             "lilicorr.pass_hidden_proj",
     MODEL_TENSOR.LILICORR_SLOT_EMBD:                    "lilicorr.slot_embedding",
@@ -6586,6 +6598,12 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.DFLASH_ATTN_K_CTX,
         MODEL_TENSOR.DFLASH_ATTN_V_CTX,
         MODEL_TENSOR.DFLASH_ATTN_K_CTX_NORM,
+        MODEL_TENSOR.DSPINE_CODEBOOK,
+        MODEL_TENSOR.DSPINE_GATE,
+        MODEL_TENSOR.DSPINE_PRED_GATE,
+        MODEL_TENSOR.DSPINE_PREV,
+        MODEL_TENSOR.DSPINE_READ,
+        MODEL_TENSOR.DSPINE_WRITE,
         MODEL_TENSOR.LILICORR_TOKEN_PROJ,
         MODEL_TENSOR.LILICORR_PASS_HIDDEN_PROJ,
         MODEL_TENSOR.LILICORR_SLOT_EMBD,

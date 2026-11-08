@@ -1624,6 +1624,7 @@ struct llama_model_dflash : public llama_model_base {
         VARIANT_DFLASH2,
         VARIANT_DSPARK,
         VARIANT_LILICORR,
+        VARIANT_DSPINE,
     };
 
     enum backbone_type {
@@ -1643,6 +1644,7 @@ struct llama_model_dflash : public llama_model_base {
     void load_tensors_dflash2_conv();
     void load_tensors_dspark(int64_t n_vocab_draft);
     void load_tensors_lilicorr();
+    void load_tensors_dspine();
     void load_tensors_layers_base();
     void load_tensors_layers_dsv4();
     void load_tensors_layers_mistral_large4();
@@ -1652,6 +1654,13 @@ struct llama_model_dflash : public llama_model_base {
         graph(const llm_graph_params & params);
 
         ggml_tensor * build_inp_embd_enc() const;
+    };
+
+    // DSpine pre-write state of the last layer, read again by the lattice
+    struct dspine_stash {
+        ggml_tensor * raw = nullptr; // [n_embd, n_tokens]
+        ggml_tensor * rms = nullptr; // [1, n_tokens]
+        ggml_tensor * q   = nullptr; // [rank, n_tokens] gate projection of each row's own code, no bias
     };
 
     // inputs and stages shared by the decoder graphs of the heads
@@ -1671,7 +1680,7 @@ struct llama_model_dflash : public llama_model_base {
         void          build_inject_ctx_mix();
         void          store_inject_kv(ggml_tensor * Kcur, ggml_tensor * Vcur, int il);
         ggml_tensor * build_inp_tokens();
-        ggml_tensor * build_layers(ggml_tensor * inp_tokens);
+        ggml_tensor * build_layers(ggml_tensor * inp_tokens, dspine_stash * dspine = nullptr);
         ggml_tensor * build_logits(ggml_tensor * cur);
         ggml_tensor * build_rope(ggml_tensor * cur, ggml_tensor * pos, int il);
     };
@@ -1690,6 +1699,10 @@ struct llama_model_dflash : public llama_model_base {
 
     struct graph_lilicorr : public graph_base {
         graph_lilicorr(const llm_graph_params & params);
+    };
+
+    struct graph_dspine : public graph_base {
+        graph_dspine(const llm_graph_params & params);
     };
 
     struct graph_dsv4 : public llama_model_deepseek4::graph {
@@ -1716,6 +1729,9 @@ struct llama_model_dflash : public llama_model_base {
 
     // DSpark block input from mask_embd, run by the base layers and the Mistral Large 4 graph
     static ggml_tensor * build_dspark_inp_block(const llm_graph_context & g, const llama_model & model, ggml_tensor * inp_tokens);
+    // DSpine code bridge write after layer il, run by the base layers of DSpine drafts
+    static ggml_tensor * build_dspine_write(llm_graph_context & g, const llama_model & model,
+            ggml_tensor * cur, ggml_tensor * tokens, int il, dspine_stash * stash);
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
