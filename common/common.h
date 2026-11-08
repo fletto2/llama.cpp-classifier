@@ -611,7 +611,8 @@ struct common_params {
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
 
-    size_t moe_cache_size = 0; // GPU cache size in bytes for the MoE experts kept in the CPU, split among the GPUs like the layers
+    size_t moe_cache_size      = 0;    // GPU cache size in bytes for the MoE experts kept in the CPU, split among the GPUs like the layers
+    float  moe_cache_cpu_share = 0.0f; // share of the MoE cache misses computed on the CPU instead of uploaded
     std::string resid_cut;          // GGUF with rcut.U.<il> [k, n_embd], rcut.mu.<il>, rcut.thr.<il>: residual cut (llama_set_resid_cut)
     std::string moe_selection_bias; // raw float32 file, n_layer x n_expert: expert selection bias (llama_set_moe_selection_bias)
     std::string moe_resident;       // raw float32 file, n_layer x n_expert, > 0 = resident (llama_set_moe_tail_skip)
