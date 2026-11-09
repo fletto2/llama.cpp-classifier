@@ -177,6 +177,17 @@ LLAMA_API int32_t llama_set_resid_cut(struct llama_context * ctx, int32_t il, co
 // llama_set_resid_cut for that layer. Returns 0 or -1.
 LLAMA_API int32_t llama_set_resid_cut_first(struct llama_context * ctx, int32_t il, const float * thr0, int32_t k);
 
+// Directional clamp after layer il: a = U^T (h - mu), then each of the k coordinates is bounded to [cmin, cmax] and the
+// bounded part written back scaled by cstr, h += U ((clamp(a, cmin, cmax) - a) * cstr). Unlike steering, which shifts
+// every token equally, this leaves a token inside the band untouched and only pulls back tokens whose projection runs
+// past it. U, mu as in llama_set_resid_cut; cmin, cmax, cstr hold k values each. U = NULL clears every layer. 0 / -1.
+LLAMA_API int32_t llama_set_resid_clamp(struct llama_context * ctx, int32_t il, const float * U, const float * mu, const float * cmin, const float * cmax, const float * cstr, int32_t n_embd, int32_t k);
+
+// Dynamic, activation-conditioned steer after layer il: the residual's own projection on a probe decides the strength,
+// h += sigmoid(sharp (probe . h - sthr)) * steer, per token. probe and steer hold n_embd values; sharp (gate sharpness)
+// and sthr (gate threshold) are scalars. probe = NULL clears every layer. Returns 0 or -1 if the sizes do not match.
+LLAMA_API int32_t llama_set_resid_dyn(struct llama_context * ctx, int32_t il, const float * probe, const float * steer, float sharp, float sthr, int32_t n_embd);
+
 // LoRA training: a new adapter with trainable F32 tensors. For every 2D weight of the repeating
 // layers whose name matches one of the targets ("blk.N.<target>.weight"), A [n_in, rank] is
 // initialised like PEFT (uniform in +-1/sqrt(n_in)) and B [rank, n_out] is zero, so the adapter

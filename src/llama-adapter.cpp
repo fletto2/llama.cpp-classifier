@@ -35,17 +35,40 @@ ggml_tensor * llama_adapter_cvec::apply_to(ggml_context * ctx, ggml_tensor * cur
         cur = ggml_add(ctx, cur, layer_dir);
     }
 
-    if (il >= 0 && (size_t) il < cuts.size() && cuts[il].U != nullptr) {
-        // a = U^T (h - mu); h -= U (a * (|a| < thr))
+    if (il >= 0 && (size_t) il < cuts.size()) {
         const cut_layer & c = cuts[il];
-        ggml_tensor * a    = ggml_mul_mat(ctx, c.U, ggml_sub(ctx, cur, c.mu));
-        ggml_tensor * over = ggml_sub(ctx, ggml_abs(ctx, a), c.thr);
-        if (c.dthr0 != nullptr && first != nullptr && first->ne[1] == a->ne[1]) {
-            // position-0 tokens use thr0 = thr + dthr0
-            over = ggml_sub(ctx, over, ggml_mul(ctx, ggml_repeat(ctx, c.dthr0, a), first));
+
+        if (c.U != nullptr) {
+            // threshold cut: a = U^T (h - mu); h -= U (a * (|a| < thr))
+            ggml_tensor * a    = ggml_mul_mat(ctx, c.U, ggml_sub(ctx, cur, c.mu));
+            ggml_tensor * over = ggml_sub(ctx, ggml_abs(ctx, a), c.thr);
+            if (c.dthr0 != nullptr && first != nullptr && first->ne[1] == a->ne[1]) {
+                // position-0 tokens use thr0 = thr + dthr0
+                over = ggml_sub(ctx, over, ggml_mul(ctx, ggml_repeat(ctx, c.dthr0, a), first));
+            }
+            ggml_tensor * keep = ggml_step(ctx, ggml_neg(ctx, over));
+            cur = ggml_sub(ctx, cur, ggml_mul_mat(ctx, c.Ut, ggml_mul(ctx, a, keep)));
         }
-        ggml_tensor * keep = ggml_step(ctx, ggml_neg(ctx, over));
-        cur = ggml_sub(ctx, cur, ggml_mul_mat(ctx, c.Ut, ggml_mul(ctx, a, keep)));
+
+        if (c.cU != nullptr) {
+            // directional clamp: a = cU^T (h - cmu); bound a to [cmin, cmax] per direction,
+            // h += cUt ((clamp(a, cmin, cmax) - a) * cstr). clamp(a) = min(max(a, cmin), cmax)
+            // via relu, so the bounds can be per-direction (ggml_clamp takes only scalars).
+            ggml_tensor * a     = ggml_mul_mat(ctx, c.cU, ggml_sub(ctx, cur, c.cmu));
+            ggml_tensor * amax  = ggml_add(ctx, a, ggml_relu(ctx, ggml_neg(ctx, ggml_sub(ctx, a, c.cmin))));
+            ggml_tensor * aclip = ggml_sub(ctx, amax, ggml_relu(ctx, ggml_sub(ctx, amax, c.cmax)));
+            ggml_tensor * delta = ggml_mul(ctx, ggml_sub(ctx, aclip, a), c.cstr);
+            cur = ggml_add(ctx, cur, ggml_mul_mat(ctx, c.cUt, delta));
+        }
+
+        if (c.probe != nullptr) {
+            // dynamic steer: g = probe . h; h += sigmoid(sharp (g - sthr)) * steer, per token
+            ggml_tensor * g  = ggml_mul_mat(ctx, c.probe, cur);                         // [1, n_tokens]
+            ggml_tensor * s  = ggml_sigmoid(ctx, ggml_scale(ctx, ggml_sub(ctx, g, c.sthr), c.sharp));
+            ggml_tensor * sv = ggml_repeat(ctx, c.steer, cur);                          // [n_embd, n_tokens]
+            ggml_tensor * sb = ggml_repeat(ctx, s, cur);                                // [n_embd, n_tokens]
+            cur = ggml_add(ctx, cur, ggml_mul(ctx, sv, sb));
+        }
     }
 
     return cur;
@@ -143,6 +166,140 @@ bool llama_adapter_cvec::set_cut_first(int32_t il, const float * thr0, int32_t k
     }
     ggml_backend_tensor_set(t, d.data(), 0, ggml_nbytes(t));
     c.dthr0 = t;
+
+    return true;
+}
+
+bool llama_adapter_cvec::set_clamp(
+        const llama_model & model,
+        int32_t il,
+        const float * U,
+        const float * mu,
+        const float * cmin,
+        const float * cmax,
+        const float * cstr,
+        int32_t n_embd,
+        int32_t k) {
+    const auto & hparams = model.hparams;
+
+    if (U == nullptr) {
+        for (auto & c : cuts) {
+            c.cU = c.cUt = c.cmu = c.cmin = c.cmax = c.cstr = nullptr;
+            c.bufc.reset();
+            c.ctxc.reset();
+        }
+        return true;
+    }
+    if (n_embd != (int) hparams.n_embd || il < 0 || il >= (int) hparams.n_layer() || k <= 0 || k > n_embd ||
+            mu == nullptr || cmin == nullptr || cmax == nullptr || cstr == nullptr) {
+        LLAMA_LOG_ERROR("%s: invalid residual clamp for layer %d (n_embd %d, k %d)\n", __func__, il, n_embd, k);
+        return false;
+    }
+    if (cuts.empty()) {
+        cuts.resize(hparams.n_layer());
+    }
+
+    ggml_init_params params = {
+        /*.mem_size   =*/ 6*ggml_tensor_overhead(),
+        /*.mem_buffer =*/ NULL,
+        /*.no_alloc   =*/ true,
+    };
+    cut_layer & c = cuts[il];
+    c.bufc.reset();
+    c.ctxc.reset();
+    c.ctxc.reset(ggml_init(params));
+    if (!c.ctxc) {
+        return false;
+    }
+    ggml_context * cx = c.ctxc.get();
+    ggml_tensor * cU   = ggml_new_tensor_2d(cx, GGML_TYPE_F32, n_embd, k);
+    ggml_tensor * cUt  = ggml_new_tensor_2d(cx, GGML_TYPE_F32, k, n_embd);
+    ggml_tensor * cmu  = ggml_new_tensor_1d(cx, GGML_TYPE_F32, n_embd);
+    ggml_tensor * cmn  = ggml_new_tensor_1d(cx, GGML_TYPE_F32, k);
+    ggml_tensor * cmx  = ggml_new_tensor_1d(cx, GGML_TYPE_F32, k);
+    ggml_tensor * cst  = ggml_new_tensor_1d(cx, GGML_TYPE_F32, k);
+    if (c.buft == nullptr) {
+        c.buft = model.select_buft(il);
+    }
+    c.bufc.reset(ggml_backend_alloc_ctx_tensors_from_buft(cx, c.buft));
+    if (!c.bufc) {
+        LLAMA_LOG_ERROR("%s: failed to allocate buffer for the residual clamp\n", __func__);
+        c.ctxc.reset();
+        return false;
+    }
+
+    std::vector<float> ut((size_t) n_embd * k);
+    for (int j = 0; j < k; j++) {
+        for (int i = 0; i < n_embd; i++) {
+            ut[(size_t) i * k + j] = U[(size_t) j * n_embd + i];
+        }
+    }
+    ggml_backend_tensor_set(cU,  U,         0, ggml_nbytes(cU));
+    ggml_backend_tensor_set(cUt, ut.data(), 0, ggml_nbytes(cUt));
+    ggml_backend_tensor_set(cmu, mu,        0, ggml_nbytes(cmu));
+    ggml_backend_tensor_set(cmn, cmin,      0, ggml_nbytes(cmn));
+    ggml_backend_tensor_set(cmx, cmax,      0, ggml_nbytes(cmx));
+    ggml_backend_tensor_set(cst, cstr,      0, ggml_nbytes(cst));
+    c.cU = cU; c.cUt = cUt; c.cmu = cmu; c.cmin = cmn; c.cmax = cmx; c.cstr = cst;
+
+    return true;
+}
+
+bool llama_adapter_cvec::set_dyn(
+        const llama_model & model,
+        int32_t il,
+        const float * probe,
+        const float * steer,
+        float sharp,
+        float sthr,
+        int32_t n_embd) {
+    const auto & hparams = model.hparams;
+
+    if (probe == nullptr) {
+        for (auto & c : cuts) {
+            c.probe = c.steer = c.sthr = nullptr;
+            c.bufd.reset();
+            c.ctxd.reset();
+        }
+        return true;
+    }
+    if (n_embd != (int) hparams.n_embd || il < 0 || il >= (int) hparams.n_layer() || steer == nullptr) {
+        LLAMA_LOG_ERROR("%s: invalid dynamic steer for layer %d (n_embd %d)\n", __func__, il, n_embd);
+        return false;
+    }
+    if (cuts.empty()) {
+        cuts.resize(hparams.n_layer());
+    }
+
+    ggml_init_params params = {
+        /*.mem_size   =*/ 3*ggml_tensor_overhead(),
+        /*.mem_buffer =*/ NULL,
+        /*.no_alloc   =*/ true,
+    };
+    cut_layer & c = cuts[il];
+    c.bufd.reset();
+    c.ctxd.reset();
+    c.ctxd.reset(ggml_init(params));
+    if (!c.ctxd) {
+        return false;
+    }
+    ggml_context * cx = c.ctxd.get();
+    ggml_tensor * pr = ggml_new_tensor_2d(cx, GGML_TYPE_F32, n_embd, 1);
+    ggml_tensor * sv = ggml_new_tensor_1d(cx, GGML_TYPE_F32, n_embd);
+    ggml_tensor * st = ggml_new_tensor_1d(cx, GGML_TYPE_F32, 1);
+    if (c.buft == nullptr) {
+        c.buft = model.select_buft(il);
+    }
+    c.bufd.reset(ggml_backend_alloc_ctx_tensors_from_buft(cx, c.buft));
+    if (!c.bufd) {
+        LLAMA_LOG_ERROR("%s: failed to allocate buffer for the dynamic steer\n", __func__);
+        c.ctxd.reset();
+        return false;
+    }
+    ggml_backend_tensor_set(pr, probe, 0, ggml_nbytes(pr));
+    ggml_backend_tensor_set(sv, steer, 0, ggml_nbytes(sv));
+    ggml_backend_tensor_set(st, &sthr, 0, ggml_nbytes(st));
+    c.probe = pr; c.steer = sv; c.sthr = st; c.sharp = sharp;
 
     return true;
 }

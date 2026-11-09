@@ -2759,10 +2759,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_env("LLAMA_ARG_MOE_CACHE_MIB"));
     add_opt(common_arg(
         {"--resid-cut"}, "FNAME",
-        "residual cut: a GGUF of F32 tensors rcut.U.<il> (k directions of n_embd, orthonormal), rcut.mu.<il> (n_embd)\n"
-        "and rcut.thr.<il> (k) per layer; after layer il the component a = U^T (h - mu) is removed from tokens with\n"
-        "|a| < thr, outliers keep it (e.g. to remove a language's direction from ordinary tokens only); an optional\n"
-        "rcut.thr0.<il> (k) is the threshold for tokens at sequence position 0 (the attention sink)",
+        "residual edits from a GGUF of F32 tensors, per layer il, applied after layer il (any combination):\n"
+        " cut   rcut.U.<il> [k, n_embd] (k orthonormal directions), rcut.mu.<il> [n_embd], rcut.thr.<il> [k]: the\n"
+        "       component a = U^T (h - mu) is removed from tokens with |a| < thr, outliers keep it (e.g. a language\n"
+        "       direction from ordinary tokens); optional rcut.thr0.<il> [k] is the threshold at sequence position 0\n"
+        " clamp rcut.cU/cmu [as U/mu], rcut.cmin/cmax/cstr.<il> [k]: bound a to [cmin,cmax] per direction and write it\n"
+        "       back scaled by cstr, h += cU ((clamp(a,cmin,cmax) - a) * cstr) (caps a feature, leaves tokens in band)\n"
+        " dyn   rcut.probe/steer.<il> [n_embd], rcut.sharp/sthr.<il> [1]: activation-conditioned steer, per token\n"
+        "       h += sigmoid(sharp (probe . h - sthr)) * steer",
         [](common_params & params, const std::string & value) {
             params.resid_cut = value;
         }

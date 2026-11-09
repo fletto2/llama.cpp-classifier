@@ -1651,6 +1651,18 @@ int32_t llama_context::set_resid_cut_first(int32_t il, const float * thr0, int32
     return ok ? 0 : -1;
 }
 
+int32_t llama_context::set_resid_clamp(int32_t il, const float * U, const float * mu, const float * cmin, const float * cmax, const float * cstr, int32_t n_embd, int32_t k) {
+    const bool ok = cvec->set_clamp(model, il, U, mu, cmin, cmax, cstr, n_embd, k);
+    sched_need_reserve = true;
+    return ok ? 0 : -1;
+}
+
+int32_t llama_context::set_resid_dyn(int32_t il, const float * probe, const float * steer, float sharp, float sthr, int32_t n_embd) {
+    const bool ok = cvec->set_dyn(model, il, probe, steer, sharp, sthr, n_embd);
+    sched_need_reserve = true;
+    return ok ? 0 : -1;
+}
+
 int32_t llama_context::set_moe_tail_skip(const float * resident, int32_t n_layer, int32_t n_expert, int32_t rank_from) {
     moe_resident.clear();
     moe_tail_mask = nullptr;
@@ -4736,6 +4748,14 @@ int32_t llama_set_resid_cut(llama_context * ctx, int32_t il, const float * U, co
 
 int32_t llama_set_resid_cut_first(llama_context * ctx, int32_t il, const float * thr0, int32_t k) {
     return ctx->set_resid_cut_first(il, thr0, k);
+}
+
+int32_t llama_set_resid_clamp(llama_context * ctx, int32_t il, const float * U, const float * mu, const float * cmin, const float * cmax, const float * cstr, int32_t n_embd, int32_t k) {
+    return ctx->set_resid_clamp(il, U, mu, cmin, cmax, cstr, n_embd, k);
+}
+
+int32_t llama_set_resid_dyn(llama_context * ctx, int32_t il, const float * probe, const float * steer, float sharp, float sthr, int32_t n_embd) {
+    return ctx->set_resid_dyn(il, probe, steer, sharp, sthr, n_embd);
 }
 
 int32_t llama_set_moe_tail_skip(llama_context * ctx, const float * resident, int32_t n_layer, int32_t n_expert, int32_t rank_from) {

@@ -43,6 +43,32 @@ struct llama_adapter_cvec {
     // a separate threshold for tokens at sequence position 0 (see llama_set_resid_cut_first)
     bool set_cut_first(int32_t il, const float * thr0, int32_t k);
 
+    // directional clamp after layer il (see llama_set_resid_clamp): along each of k directions,
+    // bound the (centred) projection a = U^T (h - mu) to [cmin, cmax] and write the bounded part
+    // back scaled by cstr: h += Ut ((clamp(a, cmin, cmax) - a) * cstr). U = nullptr clears clamps.
+    bool set_clamp(
+            const llama_model & model,
+            int32_t il,
+            const float * U,
+            const float * mu,
+            const float * cmin,
+            const float * cmax,
+            const float * cstr,
+            int32_t n_embd,
+            int32_t k);
+
+    // dynamic, activation-conditioned steer after layer il (see llama_set_resid_dyn): the residual's
+    // own projection on a probe gates an additive steer, h += sigmoid(sharp (probe . h - sthr)) * steer.
+    // probe = nullptr clears the dynamic steer of every layer.
+    bool set_dyn(
+            const llama_model & model,
+            int32_t il,
+            const float * probe,
+            const float * steer,
+            float sharp,
+            float sthr,
+            int32_t n_embd);
+
 private:
     bool init(const llama_model & model);
 
@@ -58,6 +84,22 @@ private:
         ggml_backend_buffer_type_t buft = nullptr;
         ggml_context_ptr       ctx;
         ggml_backend_buffer_ptr buf;
+        // directional clamp (independent of the threshold cut above; own projection geometry)
+        ggml_tensor * cU   = nullptr; // [n_embd, k]
+        ggml_tensor * cUt  = nullptr; // [k, n_embd]
+        ggml_tensor * cmu  = nullptr; // [n_embd]
+        ggml_tensor * cmin = nullptr; // [k]
+        ggml_tensor * cmax = nullptr; // [k]
+        ggml_tensor * cstr = nullptr; // [k]
+        ggml_context_ptr       ctxc;
+        ggml_backend_buffer_ptr bufc;
+        // dynamic activation-conditioned steer
+        ggml_tensor * probe = nullptr; // [n_embd, 1]
+        ggml_tensor * steer = nullptr; // [n_embd]
+        ggml_tensor * sthr  = nullptr; // [1]
+        float sharp = 1.0f;
+        ggml_context_ptr       ctxd;
+        ggml_backend_buffer_ptr bufd;
     };
     std::vector<cut_layer> cuts; // per layer, empty when no cut is set
 

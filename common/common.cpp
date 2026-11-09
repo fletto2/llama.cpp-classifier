@@ -1487,26 +1487,68 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
         const int32_t n_embd = llama_model_n_embd(model);
         int n_cut = 0;
         bool ok = true;
+        auto get = [&](const std::string & name, int32_t il) {
+            return ggml_get_tensor(cctx, (name + std::to_string(il)).c_str());
+        };
+        auto f32 = [](const ggml_tensor * t) { return t && t->type == GGML_TYPE_F32; };
         for (int32_t il = 0; il < llama_model_n_layer(model) && ok; il++) {
-            ggml_tensor * U   = ggml_get_tensor(cctx, ("rcut.U."   + std::to_string(il)).c_str());
-            ggml_tensor * mu  = ggml_get_tensor(cctx, ("rcut.mu."  + std::to_string(il)).c_str());
-            ggml_tensor * thr = ggml_get_tensor(cctx, ("rcut.thr." + std::to_string(il)).c_str());
-            if (!U && !mu && !thr) {
+            ggml_tensor * U   = get("rcut.U.",   il);
+            ggml_tensor * mu  = get("rcut.mu.",  il);
+            ggml_tensor * thr = get("rcut.thr.", il);
+            ggml_tensor * cU   = get("rcut.cU.",   il);
+            ggml_tensor * cmu  = get("rcut.cmu.",  il);
+            ggml_tensor * cmin = get("rcut.cmin.", il);
+            ggml_tensor * cmax = get("rcut.cmax.", il);
+            ggml_tensor * cstr = get("rcut.cstr.", il);
+            ggml_tensor * probe = get("rcut.probe.", il);
+            ggml_tensor * steer = get("rcut.steer.", il);
+            ggml_tensor * sharp = get("rcut.sharp.", il);
+            ggml_tensor * sthr  = get("rcut.sthr.",  il);
+            if (!U && !mu && !thr && !cU && !cmu && !cmin && !cmax && !cstr && !probe && !steer && !sharp && !sthr) {
                 continue;
             }
-            if (!U || !mu || !thr || U->type != GGML_TYPE_F32 || mu->type != GGML_TYPE_F32 || thr->type != GGML_TYPE_F32 ||
-                    U->ne[0] != n_embd || mu->ne[0] != n_embd || thr->ne[0] != U->ne[1] ||
-                    llama_set_resid_cut(lctx, il, (const float *) U->data, (const float *) mu->data,
-                                        (const float *) thr->data, n_embd, (int32_t) U->ne[1]) != 0) {
-                COM_ERR("%s: %s: layer %d needs F32 rcut.U [k, %d], rcut.mu [%d] and rcut.thr [k]\n", __func__,
-                        params.resid_cut.c_str(), il, n_embd, n_embd);
-                ok = false;
+
+            // threshold cut
+            if (U || mu || thr) {
+                if (!f32(U) || !f32(mu) || !f32(thr) || U->ne[0] != n_embd || mu->ne[0] != n_embd || thr->ne[0] != U->ne[1] ||
+                        llama_set_resid_cut(lctx, il, (const float *) U->data, (const float *) mu->data,
+                                            (const float *) thr->data, n_embd, (int32_t) U->ne[1]) != 0) {
+                    COM_ERR("%s: %s: layer %d needs F32 rcut.U [k, %d], rcut.mu [%d] and rcut.thr [k]\n", __func__,
+                            params.resid_cut.c_str(), il, n_embd, n_embd);
+                    ok = false;
+                }
+                ggml_tensor * thr0 = ok ? get("rcut.thr0.", il) : nullptr;
+                if (thr0 && (!f32(thr0) || thr0->ne[0] != U->ne[1] ||
+                        llama_set_resid_cut_first(lctx, il, (const float *) thr0->data, (int32_t) U->ne[1]) != 0)) {
+                    COM_ERR("%s: %s: rcut.thr0.%d must be F32 [k]\n", __func__, params.resid_cut.c_str(), il);
+                    ok = false;
+                }
             }
-            ggml_tensor * thr0 = ok ? ggml_get_tensor(cctx, ("rcut.thr0." + std::to_string(il)).c_str()) : nullptr;
-            if (thr0 && (thr0->type != GGML_TYPE_F32 || thr0->ne[0] != U->ne[1] ||
-                    llama_set_resid_cut_first(lctx, il, (const float *) thr0->data, (int32_t) U->ne[1]) != 0)) {
-                COM_ERR("%s: %s: rcut.thr0.%d must be F32 [k]\n", __func__, params.resid_cut.c_str(), il);
-                ok = false;
+
+            // directional clamp
+            if (ok && (cU || cmu || cmin || cmax || cstr)) {
+                if (!f32(cU) || !f32(cmu) || !f32(cmin) || !f32(cmax) || !f32(cstr) ||
+                        cU->ne[0] != n_embd || cmu->ne[0] != n_embd ||
+                        cmin->ne[0] != cU->ne[1] || cmax->ne[0] != cU->ne[1] || cstr->ne[0] != cU->ne[1] ||
+                        llama_set_resid_clamp(lctx, il, (const float *) cU->data, (const float *) cmu->data,
+                                              (const float *) cmin->data, (const float *) cmax->data,
+                                              (const float *) cstr->data, n_embd, (int32_t) cU->ne[1]) != 0) {
+                    COM_ERR("%s: %s: layer %d clamp needs F32 rcut.cU [k, %d], rcut.cmu [%d], rcut.{cmin,cmax,cstr} [k]\n",
+                            __func__, params.resid_cut.c_str(), il, n_embd, n_embd);
+                    ok = false;
+                }
+            }
+
+            // dynamic, activation-conditioned steer
+            if (ok && (probe || steer || sharp || sthr)) {
+                if (!f32(probe) || !f32(steer) || !f32(sharp) || !f32(sthr) ||
+                        probe->ne[0] != n_embd || steer->ne[0] != n_embd || sharp->ne[0] != 1 || sthr->ne[0] != 1 ||
+                        llama_set_resid_dyn(lctx, il, (const float *) probe->data, (const float *) steer->data,
+                                            ((const float *) sharp->data)[0], ((const float *) sthr->data)[0], n_embd) != 0) {
+                    COM_ERR("%s: %s: layer %d dyn steer needs F32 rcut.probe [%d], rcut.steer [%d], rcut.sharp [1], rcut.sthr [1]\n",
+                            __func__, params.resid_cut.c_str(), il, n_embd, n_embd);
+                    ok = false;
+                }
             }
             n_cut++;
         }
