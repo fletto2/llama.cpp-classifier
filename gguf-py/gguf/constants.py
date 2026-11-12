@@ -6978,8 +6978,8 @@ class GGMLQuantizationType(IntEnum):
     Q2_0    = 42
     F8_E4M3 = 43
     PTQ1_0  = 143
-    IQ3_K   = 144  # Avalon's 43, ik_llama.cpp's 138
-    IQ3_KS  = 145  # Avalon's 44: ik_llama.cpp's IQ3_KS codebook with a block scale (104 B / 256)
+    IQ3_K   = 150  # Avalon's 43, ik_llama.cpp's 138
+    IQ3_KS  = 151  # Avalon's 44: ik_llama.cpp's IQ3_KS codebook with a block scale (104 B / 256)
 
 
 class ExpertGatingFuncType(IntEnum):
