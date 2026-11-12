@@ -77,22 +77,22 @@ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, con
             break;
 // -----------------------------------------------------------------------
         case GGML_TYPE_TQ2_T:
-            mul_mat_q_case<GGML_TYPE_TQ2_T>(ctx, args, stream);
+            mul_mat_q_case<GGML_TYPE_TQ2_T, GGML_PREC_Q8>(ctx, args, stream);
             break;
         case GGML_TYPE_TQK6:
-            mul_mat_q_case<GGML_TYPE_TQK6>(ctx, args, stream);
+            mul_mat_q_case<GGML_TYPE_TQK6, GGML_PREC_Q8>(ctx, args, stream);
             break;
         case GGML_TYPE_TQK7:
-            mul_mat_q_case<GGML_TYPE_TQK7>(ctx, args, stream);
+            mul_mat_q_case<GGML_TYPE_TQK7, GGML_PREC_Q8>(ctx, args, stream);
             break;
         case GGML_TYPE_TQP5:
-            mul_mat_q_case<GGML_TYPE_TQP5>(ctx, args, stream);
+            mul_mat_q_case<GGML_TYPE_TQP5, GGML_PREC_Q8>(ctx, args, stream);
             break;
         case GGML_TYPE_TQP6:
-            mul_mat_q_case<GGML_TYPE_TQP6>(ctx, args, stream);
+            mul_mat_q_case<GGML_TYPE_TQP6, GGML_PREC_Q8>(ctx, args, stream);
             break;
         case GGML_TYPE_TQP7:
-            mul_mat_q_case<GGML_TYPE_TQP7>(ctx, args, stream);
+            mul_mat_q_case<GGML_TYPE_TQP7, GGML_PREC_Q8>(ctx, args, stream);
             break;
 // -----------------------------------------------------------------------
         case GGML_TYPE_MXFP4:
