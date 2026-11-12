@@ -12266,6 +12266,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 
     for (ggml_type type_a : all_types) {
         test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 4, 2, false, 64, 16, 3*ggml_blck_size(type_a)));
+    }
+
     // Trellis types in a small Flash-Next-like MoE (10 of 32 experts; gate/up-like k = 640 = 5 blocks,
     // down-like m = 640): mat-vec (n <= 8, incl. the multi-token MoE kernel), the batched path for
     // n >= 9 (CUDA/HIP: MMQ with the trellis tile loader; GGML_CUDA_TQ_MMQ=0: dequant + BLAS),
