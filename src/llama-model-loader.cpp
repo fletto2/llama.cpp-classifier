@@ -95,6 +95,68 @@ const char * llama_ftype_name(llama_ftype ftype) {
 
 // return a list of splits for a given path
 // for example, given "<name>-00002-of-00004.gguf", returns list of all 4 splits
+static size_t gguf_elem_size(enum gguf_type type) {
+    switch (type) {
+        case GGUF_TYPE_UINT8:   case GGUF_TYPE_INT8:  case GGUF_TYPE_BOOL:    return 1;
+        case GGUF_TYPE_UINT16:  case GGUF_TYPE_INT16:                         return 2;
+        case GGUF_TYPE_UINT32:  case GGUF_TYPE_INT32: case GGUF_TYPE_FLOAT32: return 4;
+        case GGUF_TYPE_UINT64:  case GGUF_TYPE_INT64: case GGUF_TYPE_FLOAT64: return 8;
+        default:                                                              return 0;
+    }
+}
+
+// same type and same values; nested arrays never match
+static bool gguf_kv_equal(const gguf_context * a, int64_t ia, const gguf_context * b, int64_t ib) {
+    const enum gguf_type type = gguf_get_kv_type(a, ia);
+    if (type != gguf_get_kv_type(b, ib)) {
+        return false;
+    }
+    if (type == GGUF_TYPE_STRING) {
+        return strcmp(gguf_get_val_str(a, ia), gguf_get_val_str(b, ib)) == 0;
+    }
+    if (type != GGUF_TYPE_ARRAY) {
+        return memcmp(gguf_get_val_data(a, ia), gguf_get_val_data(b, ib), gguf_elem_size(type)) == 0;
+    }
+    const enum gguf_type arr_type = gguf_get_arr_type(a, ia);
+    const size_t         n        = gguf_get_arr_n(a, ia);
+    if (arr_type != gguf_get_arr_type(b, ib) || n != gguf_get_arr_n(b, ib) || arr_type == GGUF_TYPE_ARRAY) {
+        return false;
+    }
+    if (arr_type == GGUF_TYPE_STRING) {
+        for (size_t i = 0; i < n; i++) {
+            if (strcmp(gguf_get_arr_str(a, ia, i), gguf_get_arr_str(b, ib, i)) != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+    return n == 0 || memcmp(gguf_get_arr_data(a, ia), gguf_get_arr_data(b, ib), n*gguf_elem_size(arr_type)) == 0;
+}
+
+// a PLE table is only valid for the layout and hashing it was built with, so every key the PLE file carries must
+// match the model; split.* and general.* (except the architecture) are ignored
+static void llama_check_ple_keys(const gguf_context * ple, const gguf_context * model, const char * fname) {
+    int n_checked = 0;
+    for (int64_t i = 0; i < gguf_get_n_kv(ple); i++) {
+        const std::string key = gguf_get_key(ple, i);
+        if (key.rfind("split.", 0) == 0 || (key.rfind("general.", 0) == 0 && key != "general.architecture")) {
+            continue;
+        }
+        const int64_t kid = gguf_find_key(model, key.c_str());
+        if (kid < 0) {
+            LLAMA_LOG_WARN("%s: key %s of the PLE file is not in the model, not checked\n", __func__, key.c_str());
+            continue;
+        }
+        if (!gguf_kv_equal(ple, i, model, kid)) {
+            throw std::runtime_error(format("PLE file %s does not match the model: %s differs", fname, key.c_str()));
+        }
+        n_checked++;
+    }
+    if (n_checked == 0) {
+        LLAMA_LOG_WARN("%s: PLE file %s has no metadata to check against the model\n", __func__, fname);
+    }
+}
+
 static std::vector<std::string> llama_get_list_splits(const std::string & path, const int idx, const int n_split) {
     std::vector<std::string> paths;
     std::string split_prefix;
@@ -722,6 +784,9 @@ llama_model_loader::llama_model_loader(
             } else {
                 // an external PLE table replaces the one in the model, if any
                 allow_override_tensor = is_ple_only(ctx_gguf.get());
+                if (allow_override_tensor) {
+                    llama_check_ple_keys(ctx_gguf.get(), metadata, fname_split);
+                }
                 const bool numbered = gguf_find_key(ctx_gguf.get(), kv_split_no.c_str()) >= 0 ||
                     gguf_find_key(ctx_gguf.get(), llm_kv(LLM_KV_SPLIT_COUNT).c_str()) >= 0 ||
                     gguf_find_key(ctx_gguf.get(), llm_kv(LLM_KV_SPLIT_TENSORS_COUNT).c_str()) >= 0;
@@ -744,6 +809,11 @@ llama_model_loader::llama_model_loader(
                     // only override tensors of the model, not of another extra shard
                     if (!allow_override_tensor || it->second.idx >= n_backbone_files) {
                         throw std::runtime_error(format("invalid model: tensor '%s' is duplicated", ggml_get_name(cur)));
+                    }
+                    if (!ggml_are_same_shape(it->second.tensor, cur)) {
+                        throw std::runtime_error(format("%s: tensor '%s' has wrong shape; expected %s, got %s", fname_split,
+                                tensor_name.c_str(), llama_format_tensor_shape(it->second.tensor).c_str(),
+                                llama_format_tensor_shape(cur).c_str()));
                     }
                     LLAMA_LOG_INFO("%s: tensor '%s' overridden by %s\n", __func__, tensor_name.c_str(), fname_split);
                     n_elements -= ggml_nelements(it->second.tensor);
