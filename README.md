@@ -10,7 +10,8 @@ This is [llama.cpp](https://github.com/ggml-org/llama.cpp), kept in sync with up
 - **Residual cut** (`--resid-cut`): projects a few directions out of the hidden state after chosen layers, for tokens within a threshold only, on any architecture; e.g. to remove other languages' directions from a model.
 - **Lazy MoE experts** (`--lazy-mode experts`): expert tensors are read from the file on demand, so a MoE model larger than RAM runs without thrashing the page cache.
 - **PTQ1_0** (ggml type 143): PrismML's ternary type at group 128, ported from the [PrismML-Eng fork](https://github.com/PrismML-Eng/llama.cpp) with its authorship kept, so their Ternary Bonsai GGUFs load.
-- **IQ3_K / IQ3_KS** (ggml types 144 / 145): the 3-bit types of ik_llama.cpp as carried by [Avalon](https://github.com/freriadoc/Avalon) (MIT), with codec, CPU, CUDA and HIP paths (no Vulkan or Metal), so Avalon's Qwen3.8-Flash-Next files load here after renumbering the types and unpacking the experts.
+- **IQ3_K / IQ3_KS** (ggml types 150 / 151; 144 / 145 until 2026-11-12): the 3-bit types of ik_llama.cpp as carried by [Avalon](https://github.com/freriadoc/Avalon) (MIT), with codec, CPU, CUDA and HIP paths (no Vulkan or Metal), so Avalon's Qwen3.8-Flash-Next files load here after renumbering the types and unpacking the experts. Files written with 144 / 145 must be re-tagged.
+- **Trellis-coded types** (ggml types 144-149: TQ2_T, TQK6, TQK7, TQP5, TQP6, TQP7), ported from [agentionai/llama.cpp](https://gitlab.com/agentionai-group/llama.cpp) with authorship kept, so the Qwen3.8-Flash-Next Gyro GGUFs (trellis-coded routed experts in a Hadamard-rotated basis) load. CPU (AVX2 / AVX-512) and CUDA paths, no Vulkan. See [Trellis-coded types](#trellis-coded-types).
 - **CPU + integrated GPU co-processing** of Q4_0 matrix products for prompt processing on boards whose GPU shares memory with the CPU (`GGML_CPU_COPROC_VULKAN`).
 - **Bolmo / Bwen byte-level models** (arch `bolmo`): conversion, quantization and `llama-bolmo` for generation and per-byte scoring.
 - **KV-cache fold** (`llama-kv-fold`): per-channel key scales and a key offset written into the model, exact for attention, so a 4.5-bit K cache loses about 7–12× less.
@@ -345,6 +346,21 @@ CUDA dequantization and matrix-vector products. Not ported: `PQ2_0` (type 142), 
 
 Ternary-Bonsai-2-2B perplexity: 31.82 on CPU and 31.97 on CUDA, against 31.79 / 31.84 for its `Q2_0` file. On CUDA,
 prompt batches run about 5× slower than `Q2_0`, which has the quantized matrix-matrix kernels that `PTQ1_0` lacks here.
+
+## Trellis-coded types
+
+Six ggml types from [agentionai/llama.cpp](https://gitlab.com/agentionai-group/llama.cpp), ported with the original
+authors on the commits: `TQ2_T` (144, 2.125 bits per weight, group 128), `TQK6` / `TQK7` (145 / 146, 1.625 / 1.875),
+and `TQP5` / `TQP6` / `TQP7` (147-149). They store weights as paths through a trellis whose states decode to values
+through a codebook, which is what the Qwen3.8-Flash-Next Gyro GGUFs use for their routed experts. Ported: codecs,
+CPU dot products (AVX2 / AVX-512), CUDA dequantization, `get_rows`, matrix-vector and matrix-matrix products; the
+`agention.trellis.state_bits` key is checked at load (15-bit states). Not ported: Vulkan kernels. The CPU quantizer
+is the source fork's greedy placeholder, so usable files come from an offline encoder; `llama-quantize` does not
+offer these types. The qwen4exp architecture is listed for Hadamard-rotation verification, and a PLE table given with
+`--ple` must match the model's keys and shape. To make room, IQ3_K / IQ3_KS moved from 144 / 145 to 150 / 151.
+
+Also from that fork and from [halo-box/strix-llama.cpp](https://github.com/halo-box/strix-llama.cpp): freed KV-cache
+cells are zeroed (after in-flight graphs finish), and the CUDA `MUL_MAT_ID` fallback counts on the host.
 
 ## Other changes
 
