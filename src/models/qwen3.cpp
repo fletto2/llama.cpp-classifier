@@ -135,7 +135,7 @@ ggml_tensor * llama_model_qwen3::graph::build_backbone() {
         cur = build_ffn(cur,
                 model.layers[il].ffn_up,   NULL, model.layers[il].ffn_up_s,
                 model.layers[il].ffn_gate, NULL, model.layers[il].ffn_gate_s,
-                model.layers[il].ffn_down, NULL, model.layers[il].ffn_down_s,
+                model.layers[il].ffn_down, model.layers[il].ffn_down_b, model.layers[il].ffn_down_s,
                 NULL,
                 LLM_FFN_SILU, LLM_FFN_PAR, il);
         cb(cur, "ffn_out", il);

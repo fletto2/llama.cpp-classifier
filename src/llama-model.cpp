@@ -1857,6 +1857,12 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 layer.wqkv_gate_s = create_tensor(tn(LLM_TENSOR_ATTN_GATE, "scale", i), {1}, TENSOR_NOT_REQUIRED);
             }
 
+            // optional dense FFN down-projection bias, for archs that have none of their own: carries the mean output
+            // of FFN units removed from a narrowed model (mean replacement folded into a bias, wllm IDEA17)
+            if (!layer.ffn_down_b && layer.ffn_down) {
+                layer.ffn_down_b = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "bias", i), {layer.ffn_down->ne[1]}, TENSOR_NOT_REQUIRED);
+            }
+
             // dense FFN weight scales (per-tensor, shape {1})
             if (!layer.ffn_gate_s && layer.ffn_gate) {
                 layer.ffn_gate_s = create_tensor(tn(LLM_TENSOR_FFN_GATE, "scale", i), {1}, TENSOR_NOT_REQUIRED);
