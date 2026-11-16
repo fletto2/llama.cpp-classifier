@@ -142,8 +142,8 @@ static std::vector<item> read_items(const std::string & path, bool need_label) {
         else if (j.contains("text")) it.text = j.at("text").get<std::string>();
         else fatal(path + ":" + std::to_string(ln) + ": needs \"text\" or \"tokens\"");
         if (j.contains("label")) it.label = j.at("label");
-        if (j.contains("term")) it.term = j.at("term").get<std::string>();
         else if (need_label) fatal(path + ":" + std::to_string(ln) + ": needs \"label\"");
+        if (j.contains("term")) it.term = j.at("term").get<std::string>();
         items.push_back(std::move(it));
     }
     if (items.empty()) fatal(path + ": no items");
