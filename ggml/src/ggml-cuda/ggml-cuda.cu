@@ -1789,6 +1789,8 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
     // broadcast factors
     const int64_t r2 = ne12/ne02;
     const int64_t r3 = ne13/ne03;
+    const int  dev_cc        = ggml_cuda_info().devices[ctx.device].cc;
+    const bool kepler_cublas = GGML_CUDA_CC_IS_NVIDIA(dev_cc) && dev_cc < 500;
 
     // Theoretically cublasGemmStridedBatchedEx would always work, even for a single matrix.
     // However, for some old NVIDIA and AMD GPUs the strided/Ex GEMM is much slower,
@@ -1816,6 +1818,16 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
 
         // there is no broadcast and src0, src1 are contiguous across dims 2, 3
         // use cublasGemmStridedBatchedEx
+        if (compute_type == GGML_TYPE_F32 && kepler_cublas) {
+            // the *Ex batched GEMMs need compute capability 5.0 (CUBLAS_STATUS_ARCH_MISMATCH on Kepler)
+            CUBLAS_CHECK(
+            cublasSgemmStridedBatched(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                    ne01, ne11, ne10,
+                    (const float *) alpha, (const float *) src0_ptr, s01, sma,
+                                           (const float *) src1_ptr, s11, smb,
+                    (const float *) beta,  (float       *)  dst_ptr, ldc, ne1*ldc,
+                    ne12*ne13));
+        } else
         CUBLAS_CHECK(
         cublasGemmStridedBatchedEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                 ne01, ne11, ne10,
@@ -1854,6 +1866,15 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
 
         CUDA_CHECK(cudaGetLastError());
 
+        if (compute_type == GGML_TYPE_F32 && kepler_cublas) {
+            CUBLAS_CHECK(
+            cublasSgemmBatched(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                    ne01, ne11, ne10,
+                    (const float *) alpha, (const float **) (ptrs_src.get() + 0*ne23), s01,
+                                           (const float **) (ptrs_src.get() + 1*ne23), s11,
+                    (const float *) beta,  (      float **) (ptrs_dst.get() + 0*ne23), ldc,
+                    ne23));
+        } else
         CUBLAS_CHECK(
         cublasGemmBatchedEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                 ne01, ne11, ne10,

@@ -55,10 +55,17 @@ One die at 125 W, P0 throughout:
 Accuracy (llama-perplexity, Qwen3-1.7B Q8_0, 2 x 512 tokens, micro-batch 1 so every token goes through the kernel,
 KL against stock MMVQ with the same settings): mean KLD 0.00109, same top token 97.6%, PPL ratio 0.9985 +/- 0.0025.
 Stock batched vs stock micro-batch 1 differ by the same amount (0.00109, 97.5%). test-backend-ops: the batch-1 Q8_0
-cases pass (19/19). A full `test -o MUL_MAT` run aborts on a batched case with CUBLAS_STATUS_ARCH_MISMATCH, with or
-without the kernel (open).
+cases pass (19/19).
 
 Q4_0 uses the same scheme (18-byte block as 5 aligned words, nibble - 8 folded into one -8*sum(x) per block):
 matvec 4096 x 14336 579 -> 396 us; decode Qwen3-1.7B Q4_0 31.8 -> 43.1 t/s, Qwen3-8B Q4_0 10.6 -> 15.2 t/s (all P0).
 KLD vs stock (micro-batch 1) 0.00129, noise floor 0.00126, PPL ratio 0.997 +/- 0.003; batch-1 tests 17/17.
 On the 8B, Q4_0 matches the Q8_0 speed in P0 (15.2 vs 15.0) and stays under the 125 W cap, where Q8_0 can tip into P8.
+
+## Batched matmul on Kepler
+
+`cublasGemmBatchedEx` and `cublasGemmStridedBatchedEx` need compute capability 5.0; on sm_37 they fail with
+CUBLAS_STATUS_ARCH_MISMATCH. That aborted prompt processing whenever flash attention was off (`-fa 0`: KQ and KQV are
+batched matmuls) and the full `test-backend-ops -o MUL_MAT` run. On NVIDIA cc < 500 the fp32 batched calls now use
+the classic `cublasSgemmStridedBatched` / `cublasSgemmBatched`. Qwen3-1.7B Q8_0 with `-fa 0`: pp512 378 t/s, tg32
+44.4 t/s (crashed before). MUL_MAT tests: q8_0 117, q4_0 122, f16 384, f32 291 OK, no failures.
