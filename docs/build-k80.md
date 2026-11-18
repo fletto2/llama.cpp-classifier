@@ -37,3 +37,23 @@ One die at 100 W (mostly P8):
 
 Kepler has no `__dp4a` (ggml emulates it with byte extracts and integer multiplies), no tensor cores, and FP64 at a
 third of FP32. Kernel work on this branch is measured on a die that holds P0.
+
+## Kepler Q8_0 decode kernel (`ggml/src/ggml-cuda/mmv-kepler.cu`)
+
+For compute capability < 6.1, a Q8_0 x F32 matrix-vector product (batch 1, 2D, ne00 % 64 == 0) replaces MMVQ, whose
+dp4a emulation reaches ~40 GB/s on a K80 die. It converts the int8 weights to float and FMAs them with the F32
+activations, reading each 34-byte block as 9 aligned words (`__byte_perm` for odd blocks), 4 rows per warp (8 when
+ne00 >= 8192) so each x load serves several rows. `GGML_CUDA_NO_KEPLER_MMV=1` turns it off.
+
+One die at 125 W, P0 throughout:
+
+| | stock (MMVQ) | Kepler kernel |
+|---|--:|--:|
+| matvec 4096 x 14336, standalone (`k80_q8mv` E8) | 40 GB/s | 150 GB/s |
+| Qwen3-1.7B Q8_0 tg128 | 28.4 t/s | 50.8 t/s (1.79x) |
+
+Accuracy (llama-perplexity, Qwen3-1.7B Q8_0, 2 x 512 tokens, micro-batch 1 so every token goes through the kernel,
+KL against stock MMVQ with the same settings): mean KLD 0.00109, same top token 97.6%, PPL ratio 0.9985 +/- 0.0025.
+Stock batched vs stock micro-batch 1 differ by the same amount (0.00109, 97.5%). test-backend-ops: the batch-1 Q8_0
+cases pass (19/19). A full `test -o MUL_MAT` run aborts on a batched case with CUBLAS_STATUS_ARCH_MISMATCH, with or
+without the kernel (open).
