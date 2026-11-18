@@ -20,7 +20,14 @@ copy is used for the CUDA compiles only. Other flags:
 
 Each K80 board is two GPUs (dies) of 12 GB. `CUDA_DEVICE_ORDER=PCI_BUS_ID` makes CUDA's numbering match nvidia-smi.
 
-## Performance notes (one die, 562 MHz, 100-125 W cap)
+## Performance notes
+
+Each die drops to P8 (324 MHz core and memory, about 31 GB/s) whenever its power cap binds, even at 97% utilization;
+nvidia-smi does not report the cap as active when it samples. At 100 W (the minimum) a die spends most of a decode in
+P8; at 125 W it holds P0 (562 MHz core, 2,505 MHz memory) under load. Check `nvidia-smi --query-gpu=pstate,clocks.mem`
+during a run before trusting a speed number. `nvidia-smi --cuda-clocks` is Volta+ only.
+
+One die at 100 W (mostly P8):
 
 | Qwen3-1.7B | pp512 | tg |
 |---|--:|--:|
@@ -28,6 +35,5 @@ Each K80 board is two GPUs (dies) of 12 GB. `CUDA_DEVICE_ORDER=PCI_BUS_ID` makes
 | F16, CUDA | | 10.2 t/s (41 GB/s) |
 | Q8_0, Vulkan (`-DGGML_VULKAN=ON`, no patches) | 217 t/s | 16.3 t/s |
 
-Decode reads weights at a seventh of the die's ~240 GB/s, so it is not memory-bound; the work on this branch is
-finding where the time goes. Kepler has no `__dp4a` (ggml emulates it with byte extracts and integer multiplies) and
-no tensor cores; FP64 runs at a third of FP32.
+Kepler has no `__dp4a` (ggml emulates it with byte extracts and integer multiplies), no tensor cores, and FP64 at a
+third of FP32. Kernel work on this branch is measured on a die that holds P0.
