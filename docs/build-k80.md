@@ -57,3 +57,8 @@ KL against stock MMVQ with the same settings): mean KLD 0.00109, same top token 
 Stock batched vs stock micro-batch 1 differ by the same amount (0.00109, 97.5%). test-backend-ops: the batch-1 Q8_0
 cases pass (19/19). A full `test -o MUL_MAT` run aborts on a batched case with CUBLAS_STATUS_ARCH_MISMATCH, with or
 without the kernel (open).
+
+Q4_0 uses the same scheme (18-byte block as 5 aligned words, nibble - 8 folded into one -8*sum(x) per block):
+matvec 4096 x 14336 579 -> 396 us; decode Qwen3-1.7B Q4_0 31.8 -> 43.1 t/s, Qwen3-8B Q4_0 10.6 -> 15.2 t/s (all P0).
+KLD vs stock (micro-batch 1) 0.00129, noise floor 0.00126, PPL ratio 0.997 +/- 0.003; batch-1 tests 17/17.
+On the 8B, Q4_0 matches the Q8_0 speed in P0 (15.2 vs 15.0) and stays under the 125 W cap, where Q8_0 can tip into P8.
