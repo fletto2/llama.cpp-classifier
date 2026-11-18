@@ -69,3 +69,10 @@ CUBLAS_STATUS_ARCH_MISMATCH. That aborted prompt processing whenever flash atten
 batched matmuls) and the full `test-backend-ops -o MUL_MAT` run. On NVIDIA cc < 500 the fp32 batched calls now use
 the classic `cublasSgemmStridedBatched` / `cublasSgemmBatched`. Qwen3-1.7B Q8_0 with `-fa 0`: pp512 378 t/s, tg32
 44.4 t/s (crashed before). MUL_MAT tests: q8_0 117, q4_0 122, f16 384, f32 291 OK, no failures.
+
+## llama-server web UI
+
+The UI is downloaded by build number from the HF bucket ggml-org/llama-ui. This fork counts more commits than
+upstream, so its number (e.g. b12352) does not exist there; the build then falls back to latest, a newer UI that
+this tree rejects (missing workbox[hash].js). scripts/k80/build.sh exports HF_UI_VERSION as the upstream build
+number of the newest sync merge (b12219 at f3178366b). By hand: HF_UI_VERSION=b12219 cmake -B build-k80 ...
