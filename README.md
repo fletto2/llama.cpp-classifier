@@ -7,7 +7,8 @@ This is [llama.cpp](https://github.com/ggml-org/llama.cpp), kept in sync with up
 - **Classifier heads** on the hidden states of the loaded model: yes/no (`noul`), multiple-choice (`choice`) and ordinal (`score`) questions. `llama-classifier` extracts features and trains heads. llama-server answers with them (`POST /classify`), answers questions given in the request without a head, returns pooled hidden states (`POST /features`), scores fixed answers by log-probability (`POST /options`) and trains new heads live (`POST /classify/train`).
 - **llama-server LoRA training** on the loaded model between requests (`--lora-train`, `POST /lora/train`).
 - **MoE expert routing for expert caching:** a selection bias toward chosen experts and a tail skip for non-resident ones (`--moe-selection-bias`, `--moe-resident`, `--moe-tail-skip`), for any MoE architecture.
-- **Residual cut** (`--resid-cut`): projects a few directions out of the hidden state after chosen layers, for tokens within a threshold only, on any architecture; e.g. to remove other languages' directions from a model.
+- **Residual cut, clamp and dynamic steer** (`--resid-cut`): after chosen layers, project a few directions out of the hidden state (for tokens within a threshold only), bound a direction's projection to a range, or add a steering vector gated per token by the hidden state's own projection; on any architecture, in llama-server too. E.g. to remove other languages' directions from a model, or cap a feature instead of shifting every token.
+- **FFN down-projection bias** for architectures without one (`blk.N.ffn_down.bias`, used by `qwen3`): a model narrowed by removing FFN units keeps their mean output at run time.
 - **Lazy MoE experts** (`--lazy-mode experts`): expert tensors are read from the file on demand, so a MoE model larger than RAM runs without thrashing the page cache.
 - **PTQ1_0** (ggml type 143): PrismML's ternary type at group 128, ported from the [PrismML-Eng fork](https://github.com/PrismML-Eng/llama.cpp) with its authorship kept, so their Ternary Bonsai GGUFs load.
 - **IQ3_K / IQ3_KS** (ggml types 150 / 151; 144 / 145 until 2026-11-12): the 3-bit types of ik_llama.cpp as carried by [Avalon](https://github.com/freriadoc/Avalon) (MIT), with codec, CPU, CUDA and HIP paths (no Vulkan or Metal), so Avalon's Qwen3.8-Flash-Next files load here after renumbering the types and unpacking the experts. Files written with 144 / 145 must be re-tagged.
@@ -327,6 +328,22 @@ perplexity on Chinese and Russian text rises from 6.6 / 22.6 to about 380,000 (C
 projected along the Chinese and Japanese directions only, with `rcut.thr0`), on English news from 14.03 to 14.41,
 the Greek and Russian prompts are answered in English, and the result matches the same hook in PyTorch.
 
+### Clamp and dynamic steer
+
+The same GGUF may carry two more edits per layer, applied after the threshold cut, in any combination:
+
+- **Clamp** (`llama_set_resid_clamp`; tensors `rcut.cU.<il>` `[k, n_embd]`, `rcut.cmu.<il>`, `rcut.cmin.<il>` /
+  `rcut.cmax.<il>` `[k]`, `rcut.cstr.<il>`): each direction's centred projection a = cUᵀ(h − cmu) is bounded to
+  [cmin, cmax] and the bounded part written back, h += cU((clamp(a, cmin, cmax) − a)·cstr). It caps a feature where
+  it is strong and leaves tokens inside the range unchanged; cmin = cmax = 0 is a full centred projection.
+- **Dynamic steer** (`llama_set_resid_dyn`; tensors `rcut.probe.<il>`, `rcut.steer.<il>` `[n_embd]`,
+  `rcut.sharp.<il>`, `rcut.sthr.<il>`): h += sigmoid(sharp·(probe·h − sthr))·steer, a steering vector applied only
+  to tokens whose own projection on the probe passes the threshold, inside the graph.
+
+Checked on Qwen3-1.7B (CPU) by exact perplexity equivalences: clamp(0, 0) = full projection = cut with an infinite
+threshold; a clamp range that contains every token = no edit; a gate near 1 with v = a gate of 0.5 with 2v; a gate
+near 0 = no edit.
+
 ## Lazy MoE experts (`--lazy-mode experts`)
 
 `--lazy-mode experts` maps every MoE expert tensor and reads it from the file on demand, with the kernel's normal
@@ -377,5 +394,10 @@ cells are zeroed (after in-flight graphs finish), and the CUDA `MUL_MAT_ID` fall
 - **Embeddings on `qwen4exp` and `deepseek4`:** the MTP hidden-state width (`llama_model_n_embd_nextn`) is separate from
   the embeddings output width, so embeddings readouts (`--embeddings`, `llama-embedding`) no longer read past the end of
   the output and abort.
+- **FFN down-projection bias:** the generic tensor pass loads `blk.N.ffn_down.bias` (`[n_embd]`, F32) for any
+  architecture that has no down bias of its own, and the `qwen3` graph adds it. A model narrowed by removing FFN units
+  stores their mean output there (mean replacement folded into a bias); other graphs ignore it for now.
+- **`llama-classifier train`:** a training line without a `"term"` field is accepted again (it had been rejected as
+  missing its label since span pooling was added).
 - **Vulkan `mul_mmq`:** the compute loop no longer runs k steps past the end of the matrix, which multiplied stale shared
   memory and returned NaN on drivers that keep earlier shared-memory contents (Raspberry Pi 5, v3dv).
