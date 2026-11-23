@@ -5367,6 +5367,14 @@ struct test_gated_delta_net : public test_case {
     // lower bound of the log-gate; a mild gate keeps the state alive over the whole sequence
     const float   g_min;
 
+    std::string op_desc(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return "GATED_DELTA_NET";
+    }
+
+    // compare only the view returned by build_graph, not the full op output
+    bool run_whole_graph() override { return K > 1 && n_seq_tokens > K; }
+
     std::string vars() override {
         std::string s = VARS_TO_STR13(type, head_count, head_size, n_seq_tokens, n_seqs, v_repeat, permuted, kda, K, correlated, padded_v, padded_q, permuted_k);
         if (g_min != -20.0f) {
@@ -5424,6 +5432,10 @@ struct test_gated_delta_net : public test_case {
             k = ggml_cpy(ctx, k, k_permuted);
         }
         ggml_tensor * out   = ggml_gated_delta_net(ctx, q, k, v, g, beta, state, K);
+        if (K > 1 && n_seq_tokens > K) {
+            // n_tokens > K: only slot 0 is guaranteed, so keep the scores and slot 0
+            out = ggml_view_2d(ctx, out, out->ne[0], out->ne[1] - (K - 1) * head_size * n_seqs, out->nb[1], 0);
+        }
         return out;
     }
 
@@ -9076,17 +9088,18 @@ struct test_roll : public test_case {
     const int shift3;
     const int shift4;
     const bool permute;
+    const std::array<int64_t, 4> ne_a;
 
     std::string vars() override {
-        return VARS_TO_STR5(shift0, shift1, shift3, shift4, permute);
+        return VARS_TO_STR6(shift0, shift1, shift3, shift4, permute, ne_a);
     }
 
-    test_roll(int shift0 = 3, int shift1 = -2, int shift3 = 1, int shift4 = -1, bool permute = false)
-        : shift0(shift0), shift1(shift1), shift3(shift3), shift4(shift4), permute(permute) {}
+    test_roll(int shift0 = 3, int shift1 = -2, int shift3 = 1, int shift4 = -1, bool permute = false,
+            std::array<int64_t, 4> ne_a = {10, 5, 4, 3})
+        : shift0(shift0), shift1(shift1), shift3(shift3), shift4(shift4), permute(permute), ne_a(ne_a) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
-        int64_t ne[4] = {10, 5, 4, 3};
-        ggml_tensor * a = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+        ggml_tensor * a = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne_a.data());
         ggml_set_name(a, "a");
 
         if (permute) {
@@ -13253,6 +13266,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_pad_reflect_1d(GGML_TYPE_F32, {3000, 384, 4, 1}));
     test_cases.emplace_back(new test_roll());
     test_cases.emplace_back(new test_roll(3, -2, 1, -1, true));
+    test_cases.emplace_back(new test_roll(0, 0, 0, 0, false, {1, 1, 1, 1}));
+    test_cases.emplace_back(new test_roll(256, 0, 0, 0, false, {257, 1, 1, 1}));
+    test_cases.emplace_back(new test_roll(-16, 6, -2, 1, false, {17, 7, 3, 2}));
+    test_cases.emplace_back(new test_roll(4, 0, 0, 0, false, {42, 512, 1, 1}));
+    test_cases.emplace_back(new test_roll(4, 0, 0, 0, false, {380, 512, 1, 1}));
     test_cases.emplace_back(new test_arange());
     test_cases.emplace_back(new test_arange(GGML_TYPE_F32, 3.0f, 3.5f, 1.0f));
     test_cases.emplace_back(new test_arange(GGML_TYPE_F32, -10.0f, 10.0f, 0.3f));
@@ -13985,6 +14003,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     for (float n : {128.0f, 4096.0f, 32768.0f, 1048576.0f}) {
         test_cases.emplace_back(new test_arange(GGML_TYPE_F32, 0.0f, n, 1.0f));
     }
+
+    test_cases.emplace_back(new test_roll(4, 0, 0, 0, false, {42, 512, 1, 1}));
+    test_cases.emplace_back(new test_roll(4, 0, 0, 0, false, {380, 512, 1, 1}));
 
     // embedding lookups: one token (decode) and one batch of 2048 tokens (prefill)
     for (int r : {16, 32768}) {
