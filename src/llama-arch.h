@@ -811,6 +811,13 @@ enum llm_tensor {
     LLM_TENSOR_ATTN_COMPRESSOR_NORM,
     LLM_TENSOR_ATTN_SUB_NORM,
     LLM_TENSOR_FFN_SUB_NORM,
+    LLM_TENSOR_ATTN_Q_NORM_IN,   // BitNet per-projection input RMSNorm
+    LLM_TENSOR_ATTN_K_NORM_IN,   // BitNet per-projection input RMSNorm
+    LLM_TENSOR_ATTN_V_NORM_IN,   // BitNet per-projection input RMSNorm
+    LLM_TENSOR_ATTN_OUT_NORM_IN,   // BitNet per-projection input RMSNorm
+    LLM_TENSOR_FFN_GATE_NORM_IN,   // BitNet per-projection input RMSNorm
+    LLM_TENSOR_FFN_UP_NORM_IN,   // BitNet per-projection input RMSNorm
+    LLM_TENSOR_FFN_DOWN_NORM_IN,   // BitNet per-projection input RMSNorm
     LLM_TENSOR_DEC_ATTN_NORM,
     LLM_TENSOR_DEC_ATTN_Q,
     LLM_TENSOR_DEC_ATTN_K,

@@ -296,6 +296,14 @@ struct llama_layer {
     struct ggml_tensor * attn_sub_norm   = nullptr;
     struct ggml_tensor * attn_post_norm  = nullptr;
     struct ggml_tensor * ffn_sub_norm    = nullptr;
+    // BitNet per-projection input RMSNorms (microsoft/BitNet embedding models; optional)
+    struct ggml_tensor * attn_q_norm_in = nullptr;
+    struct ggml_tensor * attn_k_norm_in = nullptr;
+    struct ggml_tensor * attn_v_norm_in = nullptr;
+    struct ggml_tensor * attn_out_norm_in = nullptr;
+    struct ggml_tensor * ffn_gate_norm_in = nullptr;
+    struct ggml_tensor * ffn_up_norm_in = nullptr;
+    struct ggml_tensor * ffn_down_norm_in = nullptr;
     struct ggml_tensor * attn_norm_cross = nullptr;
     struct ggml_tensor * attn_norm_enc   = nullptr;
     struct ggml_tensor * ssm_norm        = nullptr;

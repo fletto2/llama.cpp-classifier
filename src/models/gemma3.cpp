@@ -62,6 +62,15 @@ void llama_model_gemma3::load_arch_tensors(llama_model_loader &) {
         layer.attn_k_norm    = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM,    "weight", i), {n_embd_head_k}, 0);
         layer.attn_q_norm    = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM,    "weight", i), {n_embd_head_k}, 0);
 
+        // BitNet per-projection input norms (microsoft/BitNet embedding models), optional
+        layer.attn_q_norm_in   = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM_IN,   "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+        layer.attn_k_norm_in   = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM_IN,   "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+        layer.attn_v_norm_in   = create_tensor(tn(LLM_TENSOR_ATTN_V_NORM_IN,   "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+        layer.attn_out_norm_in = create_tensor(tn(LLM_TENSOR_ATTN_OUT_NORM_IN, "weight", i), {n_embd_head_k * n_head}, TENSOR_NOT_REQUIRED);
+        layer.ffn_gate_norm_in = create_tensor(tn(LLM_TENSOR_FFN_GATE_NORM_IN, "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+        layer.ffn_up_norm_in   = create_tensor(tn(LLM_TENSOR_FFN_UP_NORM_IN,   "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+        layer.ffn_down_norm_in = create_tensor(tn(LLM_TENSOR_FFN_DOWN_NORM_IN, "weight", i), {n_ff},   TENSOR_NOT_REQUIRED);
+
         layer.ffn_norm = create_tensor(tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd}, 0);
         layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, 0);
         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
@@ -112,8 +121,23 @@ llama_model_gemma3::graph<iswa>::graph(const llm_graph_params & params) : llm_gr
         // self-attention
         {
             // compute Q and K and RoPE them
-            auto [Qcur, Kcur, Vcur] = build_qkv(model.layers[il], cur,
-                    n_embd_head, n_head, n_head_kv, il);
+            const auto & ly = model.layers[il];
+            ggml_tensor * Qcur, * Kcur, * Vcur;
+            if (ly.attn_q_norm_in || ly.attn_k_norm_in || ly.attn_v_norm_in) {
+                // BitNet: each projection reads its own RMS-normed copy of the input
+                auto proj = [&](ggml_tensor * w, ggml_tensor * ws, ggml_tensor * nin, int nh, const char * name) {
+                    ggml_tensor * x = nin ? build_norm(cur, nin, NULL, LLM_NORM_RMS, il) : cur;
+                    ggml_tensor * y = build_lora_mm(w, x, ws);
+                    cb(y, name, il);
+                    return ggml_reshape_3d(ctx0, y, n_embd_head, nh, n_tokens);
+                };
+                Qcur = proj(ly.wq, ly.wq_s, ly.attn_q_norm_in, n_head,    "Qcur");
+                Kcur = proj(ly.wk, ly.wk_s, ly.attn_k_norm_in, n_head_kv, "Kcur");
+                Vcur = proj(ly.wv, ly.wv_s, ly.attn_v_norm_in, n_head_kv, "Vcur");
+            } else {
+                auto [q, k, v] = build_qkv(ly, cur, n_embd_head, n_head, n_head_kv, il);
+                Qcur = q; Kcur = k; Vcur = v;
+            }
 
             Qcur = build_norm(Qcur, model.layers[il].attn_q_norm, NULL, LLM_NORM_RMS, il);
             cb(Qcur, "Qcur_normed", il);
@@ -132,9 +156,18 @@ llama_model_gemma3::graph<iswa>::graph(const llm_graph_params & params) : llm_gr
             // ref: https://github.com/google/gemma_pytorch/blob/014acb7ac4563a5f77c76d7ff98f31b568c16508/gemma/model.py#L315
             Qcur = ggml_scale(ctx0, Qcur, hparams.f_attention_scale);
 
-            cur = build_attn(inp_attn,
-                    model.layers[il].wo, NULL, model.layers[il].wo_s,
-                    Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
+            if (ly.attn_out_norm_in) {
+                // BitNet: attention without wo, then RMSNorm, then wo
+                cur = build_attn(inp_attn, NULL, NULL, NULL,
+                        Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
+                cur = build_norm(cur, ly.attn_out_norm_in, NULL, LLM_NORM_RMS, il);
+                cb(cur, "attn_out_norm_in", il);
+                cur = build_lora_mm(ly.wo, cur, ly.wo_s);
+            } else {
+                cur = build_attn(inp_attn,
+                        ly.wo, NULL, ly.wo_s,
+                        Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
+            }
         }
         if (il == n_layer - 1 && inp_out_ids) {
             cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
@@ -155,12 +188,28 @@ llama_model_gemma3::graph<iswa>::graph(const llm_graph_params & params) : llm_gr
 
         // feed-forward network
         {
-            cur = build_ffn(cur,
-                    model.layers[il].ffn_up,   NULL, NULL,
-                    model.layers[il].ffn_gate, NULL, NULL,
-                    model.layers[il].ffn_down, NULL, NULL,
-                    NULL,
-                    LLM_FFN_GELU, LLM_FFN_PAR, il);
+            const auto & ly = model.layers[il];
+            if (ly.ffn_gate_norm_in || ly.ffn_up_norm_in || ly.ffn_down_norm_in) {
+                // BitNet: gate / up / down each read an RMS-normed input
+                ggml_tensor * g = build_lora_mm(ly.ffn_gate, ly.ffn_gate_norm_in ? build_norm(cur, ly.ffn_gate_norm_in, NULL, LLM_NORM_RMS, il) : cur);
+                ggml_tensor * u = build_lora_mm(ly.ffn_up,   ly.ffn_up_norm_in   ? build_norm(cur, ly.ffn_up_norm_in,   NULL, LLM_NORM_RMS, il) : cur);
+                cb(g, "ffn_gate", il);
+                cb(u, "ffn_up", il);
+                cur = ggml_mul(ctx0, ggml_gelu(ctx0, g), u);
+                cb(cur, "ffn_gate_par", il);
+                if (ly.ffn_down_norm_in) {
+                    cur = build_norm(cur, ly.ffn_down_norm_in, NULL, LLM_NORM_RMS, il);
+                    cb(cur, "ffn_down_norm_in", il);
+                }
+                cur = build_lora_mm(ly.ffn_down, cur);
+            } else {
+                cur = build_ffn(cur,
+                        ly.ffn_up,   NULL, NULL,
+                        ly.ffn_gate, NULL, NULL,
+                        ly.ffn_down, NULL, NULL,
+                        NULL,
+                        LLM_FFN_GELU, LLM_FFN_PAR, il);
+            }
             cb(cur, "ffn_out", il);
         }
         cur = build_norm(cur,
