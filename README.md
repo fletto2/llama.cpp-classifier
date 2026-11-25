@@ -379,6 +379,24 @@ offer these types. The qwen4exp architecture is listed for Hadamard-rotation ver
 Also from that fork and from [halo-box/strix-llama.cpp](https://github.com/halo-box/strix-llama.cpp): freed KV-cache
 cells are zeroed (after in-flight graphs finish), and the CUDA `MUL_MAT_ID` fallback counts on the host.
 
+## DSpine drafter (Qwen3.8-27B)
+
+Tencent's DSpine (`tencent/Qwen3.8-27B-DSpine-b16`, arXiv 2609.36173) is a 5-layer block drafter that proposes 15
+tokens per step and passes each position's predicted predecessor through every layer. The support is AjHomelab's
+`dspine` branch of `Ajay9o9/llama.cpp`: a DFlash variant detected by its `dspine_codebook` tensor, with the bridge write
+after every layer (`src/models/dspine.cpp`) and the last-write refinement packed as the DFlash2 selector lattice, so the
+existing DFlash2 driver picks the chain.
+
+```
+python convert_hf_to_gguf.py Qwen3.8-27B-DSpine-b16 --target-model-dir Qwen3.8-27B --outtype bf16 --outfile dspine-bf16.gguf
+llama-server -m Qwen3.8-27B-Q8_0.gguf -md dspine-Q4_K_M.gguf --spec-type draft-dflash --spec-draft-n-max 15 --jinja
+```
+
+`--target-model-dir` needs only the target's `config.json` and tokenizer. On a loaded desktop CPU (Q8_0 target,
+temperature 0) the output matched the run without a draft exactly. A code prompt accepted 66% of drafted tokens
+(10.9 tokens per verify, 3.2x; the Q4_K_M drafter 53%, 2.6x). Prose accepted 13% and ran slightly slower on the CPU,
+where checking 16 tokens costs real compute. GPU speed is not measured here.
+
 ## Other changes
 
 - **`ngram-cache` speculative drafter in llama-server:** the context cache is reset per request (a slot used to keep
