@@ -83,6 +83,7 @@ int32_t llama_ffn_sparse::load(const llama_model & model, const char * path, flo
     keep = keep_;
     max_tokens = max_tokens_;
     relu = model.hparams.llm_ffn_op == LLM_FFN_RELU;
+    this->model = &model;
     LLAMA_LOG_INFO("%s: %s: %d sparse FFN layers, keep %.3f, up to %d tokens per ubatch\n", __func__, path, n, keep, max_tokens);
     return n;
 }
@@ -110,7 +111,15 @@ bool llama_ffn_sparse::active(const llama_layer & L, int il, int64_t n_tokens) c
         }
         return false;
     }
-    return !L.ffn_gate_s && !L.ffn_up_s && !L.ffn_down_s && !L.ffn_down_b;
+    if (L.ffn_down_b) {
+        return false;
+    }
+    for (const ggml_tensor * w : { L.ffn_gate, L.ffn_up, L.ffn_down }) {   // the sparse ops apply no weight scales
+        if (model->w_scales.get(w) || model->w_scales.get_input(w)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 ggml_tensor * llama_ffn_sparse::build(ggml_context * ctx0, const llama_layer & L, int il, ggml_tensor * cur) const {

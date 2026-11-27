@@ -1650,7 +1650,7 @@ static void mul_mat_vec_q_switch_type(
 void ggml_cuda_mul_mat_vec_q(
         ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst,
         const ggml_cuda_mm_fusion_args_host * fusion) {
-    GGML_ASSERT(        src1->type == GGML_TYPE_F32);
+    GGML_ASSERT(        src1->type == GGML_TYPE_F32 || src1->type == GGML_TYPE_BF16);
     GGML_ASSERT(        dst->type  == GGML_TYPE_F32);
     GGML_ASSERT(!ids || ids->type  == GGML_TYPE_I32); // Optional, used for batched GGML_MUL_MAT_ID.
 
@@ -1669,7 +1669,6 @@ void ggml_cuda_mul_mat_vec_q(
 
     GGML_ASSERT(!ids || ne12 <= MMVQ_MAX_BATCH_SIZE);
 
-    const float   * src1_d =       (const float   *) src1->data;
     const int32_t *  ids_d = ids ? (const int32_t *)  ids->data : nullptr;
     float         *  dst_d =       (float         *)  dst->data;
 
@@ -1753,16 +1752,16 @@ void ggml_cuda_mul_mat_vec_q(
                           q8_1_size <= ggml_cuda_q8_reuse::CAP && ggml_is_contiguous(src1);
     ggml_cuda_pool_alloc<char> src1_q8_1_pool;
     const char * src1_q8_1 = nullptr;
-    if (reusable && reuse.src == src1_d && reuse.ne10 == ne10) {
+    if (reusable && reuse.src == src1->data && reuse.ne10 == ne10) {
         src1_q8_1 = (const char *) reuse.buf;
     } else {
         char * q = reusable ? (char *) reuse.buf : src1_q8_1_pool.alloc(ctx.pool(), q8_1_size);
         const int64_t s11 = src1->nb[1] / ts_src1;
         const int64_t s12 = src1->nb[2] / ts_src1;
         const int64_t s13 = src1->nb[3] / ts_src1;
-        quantize_row_q8_1_cuda(src1_d, q, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
+        quantize_row_q8_1_cuda(src1->data, src1->type, q, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
         if (reusable) {
-            reuse.src      = src1_d;
+            reuse.src      = src1->data;
             reuse.src_size = ggml_nbytes(src1);
             reuse.ne10     = ne10;
         }

@@ -125,15 +125,15 @@ llama_model_gemma3::graph<iswa>::graph(const llm_graph_params & params) : llm_gr
             ggml_tensor * Qcur, * Kcur, * Vcur;
             if (ly.attn_q_norm_in || ly.attn_k_norm_in || ly.attn_v_norm_in) {
                 // BitNet: each projection reads its own RMS-normed copy of the input
-                auto proj = [&](ggml_tensor * w, ggml_tensor * ws, ggml_tensor * nin, int nh, const char * name) {
+                auto proj = [&](ggml_tensor * w, ggml_tensor * nin, int nh, const char * name) {
                     ggml_tensor * x = nin ? build_norm(cur, nin, NULL, LLM_NORM_RMS, il) : cur;
-                    ggml_tensor * y = build_lora_mm(w, x, ws);
+                    ggml_tensor * y = build_lora_mm(w, x);   // weight scale from the model's scale map
                     cb(y, name, il);
                     return ggml_reshape_3d(ctx0, y, n_embd_head, nh, n_tokens);
                 };
-                Qcur = proj(ly.wq, ly.wq_s, ly.attn_q_norm_in, n_head,    "Qcur");
-                Kcur = proj(ly.wk, ly.wk_s, ly.attn_k_norm_in, n_head_kv, "Kcur");
-                Vcur = proj(ly.wv, ly.wv_s, ly.attn_v_norm_in, n_head_kv, "Vcur");
+                Qcur = proj(ly.wq, ly.attn_q_norm_in, n_head,    "Qcur");
+                Kcur = proj(ly.wk, ly.attn_k_norm_in, n_head_kv, "Kcur");
+                Vcur = proj(ly.wv, ly.attn_v_norm_in, n_head_kv, "Vcur");
             } else {
                 auto [q, k, v] = build_qkv(ly, cur, n_embd_head, n_head, n_head_kv, il);
                 Qcur = q; Kcur = k; Vcur = v;
@@ -158,14 +158,14 @@ llama_model_gemma3::graph<iswa>::graph(const llm_graph_params & params) : llm_gr
 
             if (ly.attn_out_norm_in) {
                 // BitNet: attention without wo, then RMSNorm, then wo
-                cur = build_attn(inp_attn, NULL, NULL, NULL,
+                cur = build_attn(inp_attn, NULL, NULL,
                         Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
                 cur = build_norm(cur, ly.attn_out_norm_in, NULL, LLM_NORM_RMS, il);
                 cb(cur, "attn_out_norm_in", il);
-                cur = build_lora_mm(ly.wo, cur, ly.wo_s);
+                cur = build_lora_mm(ly.wo, cur);
             } else {
                 cur = build_attn(inp_attn,
-                        ly.wo, NULL, ly.wo_s,
+                        ly.wo, NULL,
                         Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
             }
         }
@@ -204,9 +204,9 @@ llama_model_gemma3::graph<iswa>::graph(const llm_graph_params & params) : llm_gr
                 cur = build_lora_mm(ly.ffn_down, cur);
             } else {
                 cur = build_ffn(cur,
-                        ly.ffn_up,   NULL, NULL,
-                        ly.ffn_gate, NULL, NULL,
-                        ly.ffn_down, NULL, NULL,
+                        ly.ffn_up,   NULL,
+                        ly.ffn_gate, NULL,
+                        ly.ffn_down, NULL,
                         NULL,
                         LLM_FFN_GELU, LLM_FFN_PAR, il);
             }
@@ -235,7 +235,7 @@ llama_model_gemma3::graph<iswa>::graph(const llm_graph_params & params) : llm_gr
     res->t_embd = cur;
 
     // lm_head
-    cur = build_lora_mm(model.output, cur, model.output_s);
+    cur = build_lora_mm(model.output, cur);
 
     if (hparams.f_final_logit_softcapping) {
         cur = ggml_scale(ctx0, cur, 1.0f / hparams.f_final_logit_softcapping);

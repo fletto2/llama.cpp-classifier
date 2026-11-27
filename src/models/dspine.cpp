@@ -186,5 +186,5 @@ llama_model_dflash::graph_dspine::graph_dspine(const llm_graph_params & params) 
 
     build_logits(cur);
 
-    build_dspine_lattice(*this, model, inp_tokens, get_lm_head(*this, model).first, dspine);
+    build_dspine_lattice(*this, model, inp_tokens, get_lm_head(*this, model), dspine);
 }

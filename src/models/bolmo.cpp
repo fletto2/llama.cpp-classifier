@@ -183,7 +183,7 @@ llama_model_bolmo::graph::graph(const llama_model & model, const llm_graph_param
             cb(Vcur, "Vcur", il);
 
             cur = build_attn(inp_attn,
-                    layer.wo, NULL, layer.wo_s,
+                    layer.wo, NULL,
                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
         }
         if (il == n_layer - 1 && inp_out_ids) {
@@ -202,9 +202,9 @@ llama_model_bolmo::graph::graph(const llama_model & model, const llm_graph_param
         cb(cur, "ffn_norm", il);
 
         cur = build_ffn(cur,
-                layer.ffn_up,   NULL, layer.ffn_up_s,
-                layer.ffn_gate, NULL, layer.ffn_gate_s,
-                layer.ffn_down, NULL, layer.ffn_down_s,
+                layer.ffn_up,   NULL,
+                layer.ffn_gate, NULL,
+                layer.ffn_down, NULL,
                 NULL,
                 LLM_FFN_SILU, LLM_FFN_PAR, il);
         cb(cur, "ffn_out", il);

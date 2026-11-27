@@ -22,7 +22,8 @@ struct llama_ffn_sparse {
     std::vector<layer> layers;   // per model layer; w1 == nullptr: dense
     float   keep       = 0.5f;
     int32_t max_tokens = 4;
-    bool    relu       = false;   // gated ReLU FFN (qwen3.hidden_activation = relu) instead of SwiGLU
+    bool    relu       = false;
+    const llama_model * model = nullptr;   // for its weight-scale map (.scale / .input_scale tensors)   // gated ReLU FFN (qwen3.hidden_activation = relu) instead of SwiGLU
     ggml_custom_op_t op_gateup = nullptr;
     ggml_custom_op_t op_down   = nullptr;
     ggml_context_ptr        ctx;
