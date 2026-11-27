@@ -1,7 +1,15 @@
 #include "models.h"
+#include "../llama-ffn-sparse.h"
 
 void llama_model_qwen3::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
+
+    // wllm: ReLU-fied students write `qwen3.hidden_activation` = "relu" (gated: relu(gate x) * up x)
+    hparams.llm_ffn_op = LLM_FFN_SILU;
+    std::string hidden_act;
+    if (ml.get_key(LLM_KV_HIDDEN_ACT, hidden_act, false) && hidden_act == "relu") {
+        hparams.llm_ffn_op = LLM_FFN_RELU;
+    }
 
     switch (hparams.n_layer()) {
         case 28: type = hparams.n_embd == 1024 ? LLM_TYPE_0_6B : LLM_TYPE_1_7B; break;
@@ -132,12 +140,16 @@ ggml_tensor * llama_model_qwen3::graph::build_backbone() {
                 LLM_NORM_RMS, il);
         cb(cur, "ffn_norm", il);
 
+        if (cvec && cvec->fsp && cvec->fsp->active(model.layers[il], il, cur->ne[1])) {
+            cur = cvec->fsp->build(ctx0, model.layers[il], il, cur);   // per-token sparse FFN (llama_set_ffn_sparse)
+        } else {
         cur = build_ffn(cur,
                 model.layers[il].ffn_up,   NULL, model.layers[il].ffn_up_s,
                 model.layers[il].ffn_gate, NULL, model.layers[il].ffn_gate_s,
                 model.layers[il].ffn_down, model.layers[il].ffn_down_b, model.layers[il].ffn_down_s,
                 NULL,
-                LLM_FFN_SILU, LLM_FFN_PAR, il);
+                hparams.llm_ffn_op == LLM_FFN_RELU ? LLM_FFN_RELU : LLM_FFN_SILU, LLM_FFN_PAR, il);
+        }
         cb(cur, "ffn_out", il);
 
         cur = ggml_add(ctx0, cur, ffn_inp);

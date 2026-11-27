@@ -237,6 +237,8 @@ class Qwen3Model(Qwen2Model):
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
+        if self.hparams.get("hidden_act", "silu") == "relu":   # ReLU-fied fine-tunes (gated ReLU FFN)
+            self.gguf_writer.add_hidden_act("relu")
         if self.is_rerank:
             self.gguf_writer.add_pooling_type(gguf.PoolingType.RANK)
             self.gguf_writer.add_classifier_output_labels(["yes", "no"])

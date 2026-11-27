@@ -632,6 +632,10 @@ struct common_params {
 
     size_t moe_cache_size      = 0;    // GPU cache size in bytes for the MoE experts kept in the CPU, split among the GPUs like the layers
     float  moe_cache_cpu_share = 0.0f; // share of the MoE cache misses computed on the CPU instead of uploaded
+    std::string ffn_sparse;         // side GGUF of fsp.* tensors: per-token sparse FFN (llama_set_ffn_sparse)
+    float   ffn_sparse_keep  = 0.5f;
+    int32_t ffn_sparse_from  = 0;
+    int32_t ffn_sparse_max_tokens = 4;
     std::string resid_cut;          // GGUF with rcut.U.<il> [k, n_embd], rcut.mu.<il>, rcut.thr.<il>: residual cut (llama_set_resid_cut)
     std::string moe_selection_bias; // raw float32 file, n_layer x n_expert: expert selection bias (llama_set_moe_selection_bias)
     std::string moe_resident;       // raw float32 file, n_layer x n_expert, > 0 = resident (llama_set_moe_tail_skip)

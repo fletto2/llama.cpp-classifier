@@ -140,6 +140,7 @@ struct llama_context {
     void set_n_layer_exit(int32_t n);
     int32_t set_moe_selection_bias(const float * bias, int32_t n_layer, int32_t n_expert);
     int32_t set_moe_tail_skip(const float * resident, int32_t n_layer, int32_t n_expert, int32_t rank_from);
+    int32_t set_ffn_sparse(const char * path, float keep, int32_t first_layer, int32_t max_tokens);
     int32_t set_resid_cut(int32_t il, const float * U, const float * mu, const float * thr, int32_t n_embd, int32_t k);
     int32_t set_resid_cut_first(int32_t il, const float * thr0, int32_t k);
     int32_t set_resid_clamp(int32_t il, const float * U, const float * mu, const float * cmin, const float * cmax, const float * cstr, int32_t n_embd, int32_t k);
@@ -346,6 +347,7 @@ private:
     llama_cparams cparams;
 
     llama_adapter_cvec_ptr  cvec;
+    std::unique_ptr<struct llama_ffn_sparse> fsp;
     llama_adapter_loras_ptr loras;
 
     bool training_graph = false; // set by opt_init: graphs also hold the backward pass and the optimizer step

@@ -2762,6 +2762,35 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_MOE_CACHE_MIB"));
     add_opt(common_arg(
+        {"--ffn-sparse"}, "FNAME",
+        "per-token sparse FFN (CPU decode): a side GGUF of fsp.w1/b1/w2/b2/down_t.<il> (wllm research/fsp_train.py);\n"
+        "a predictor picks the kept units per token and only their rows are read. Needs -ngl 0 --no-repack",
+        [](common_params & params, const std::string & value) {
+            params.ffn_sparse = value;
+        }
+    ).set_env("LLAMA_ARG_FFN_SPARSE"));
+    add_opt(common_arg(
+        {"--ffn-sparse-keep"}, "F",
+        string_format("share of FFN units kept per token by --ffn-sparse (default: %.2f)", (double) params.ffn_sparse_keep),
+        [](common_params & params, const std::string & value) {
+            params.ffn_sparse_keep = std::stof(value);
+        }
+    ));
+    add_opt(common_arg(
+        {"--ffn-sparse-from"}, "N",
+        string_format("first layer made sparse by --ffn-sparse (default: %d, every layer in the file)", params.ffn_sparse_from),
+        [](common_params & params, int value) {
+            params.ffn_sparse_from = value;
+        }
+    ));
+    add_opt(common_arg(
+        {"--ffn-sparse-max-tokens"}, "N",
+        string_format("largest ubatch that uses the sparse FFN; bigger ones stay dense (default: %d)", params.ffn_sparse_max_tokens),
+        [](common_params & params, int value) {
+            params.ffn_sparse_max_tokens = value;
+        }
+    ));
+    add_opt(common_arg(
         {"--resid-cut"}, "FNAME",
         "residual edits from a GGUF of F32 tensors, per layer il, applied after layer il (any combination):\n"
         " cut   rcut.U.<il> [k, n_embd] (k orthonormal directions), rcut.mu.<il> [n_embd], rcut.thr.<il> [k]: the\n"

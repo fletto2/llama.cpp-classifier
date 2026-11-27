@@ -1481,6 +1481,14 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
         }
     }
 
+    if (!params.ffn_sparse.empty()) {
+        if (llama_set_ffn_sparse(lctx, params.ffn_sparse.c_str(), params.ffn_sparse_keep, params.ffn_sparse_from,
+                                 params.ffn_sparse_max_tokens) < 0) {
+            COM_ERR("%s: failed to load the sparse FFN from %s\n", __func__, params.ffn_sparse.c_str());
+            return res;
+        }
+    }
+
     if (!params.resid_cut.empty()) {
         ggml_context * cctx = nullptr;
         gguf_init_params gp = { /*.no_alloc =*/ false, /*.ctx =*/ &cctx };

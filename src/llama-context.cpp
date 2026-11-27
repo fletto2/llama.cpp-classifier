@@ -1,4 +1,5 @@
 #include "llama-context.h"
+#include "llama-ffn-sparse.h"
 
 #include "ggml.h"
 #include "llama-arch.h"
@@ -1804,6 +1805,24 @@ int32_t llama_context::set_moe_selection_bias(const float * bias, int32_t n_laye
         ggml_backend_tensor_set(moe_sel_bias[il], sum.data() + (size_t) il * n_expert, 0, (size_t) n_expert * sizeof(float));
     }
     return 0;
+}
+
+int32_t llama_context::set_ffn_sparse(const char * path, float keep, int32_t first_layer, int32_t max_tokens) {
+    if (!path) {
+        fsp.reset();
+        cvec->fsp = nullptr;
+        sched_need_reserve = true;
+        return 0;
+    }
+    auto f = std::make_unique<llama_ffn_sparse>();
+    const int32_t n = f->load(model, path, keep, first_layer, max_tokens);
+    if (n < 0) {
+        return -1;
+    }
+    fsp = std::move(f);
+    cvec->fsp = fsp.get();
+    sched_need_reserve = true;
+    return n;
 }
 
 int32_t llama_context::set_resid_cut(int32_t il, const float * U, const float * mu, const float * thr, int32_t n_embd, int32_t k) {
@@ -4957,6 +4976,10 @@ void llama_set_n_layer_exit(llama_context * ctx, int32_t n) {
 
 int32_t llama_set_moe_selection_bias(llama_context * ctx, const float * bias, int32_t n_layer, int32_t n_expert) {
     return ctx->set_moe_selection_bias(bias, n_layer, n_expert);
+}
+
+int32_t llama_set_ffn_sparse(llama_context * ctx, const char * path, float keep, int32_t first_layer, int32_t max_tokens) {
+    return ctx->set_ffn_sparse(path, keep, first_layer, max_tokens);
 }
 
 int32_t llama_set_resid_cut(llama_context * ctx, int32_t il, const float * U, const float * mu, const float * thr, int32_t n_embd, int32_t k) {

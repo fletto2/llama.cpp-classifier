@@ -657,6 +657,9 @@ static ggml_backend_feature * ggml_backend_cpu_get_features(ggml_backend_reg_t r
     GGML_UNUSED(reg);
 }
 
+extern "C" void ggml_cpu_ffn_sparse_gateup(struct ggml_tensor * dst, int ith, int nth, void * userdata);
+extern "C" void ggml_cpu_ffn_sparse_down(struct ggml_tensor * dst, int ith, int nth, void * userdata);
+
 static void * ggml_backend_cpu_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     if (strcmp(name, "ggml_backend_set_n_threads") == 0) {
         ggml_backend_set_n_threads_t fct = ggml_backend_cpu_set_n_threads;
@@ -680,6 +683,13 @@ static void * ggml_backend_cpu_get_proc_address(ggml_backend_reg_t reg, const ch
     }
     if (strcmp(name, "ggml_backend_cpu_set_use_ref") == 0) {
         return (void *)ggml_backend_cpu_set_use_ref;
+    }
+    // per-token sparse FFN callbacks for ggml_custom_4d (ffn-sparse.cpp, wllm fork)
+    if (strcmp(name, "ggml_cpu_ffn_sparse_gateup") == 0) {
+        return (void *)ggml_cpu_ffn_sparse_gateup;
+    }
+    if (strcmp(name, "ggml_cpu_ffn_sparse_down") == 0) {
+        return (void *)ggml_cpu_ffn_sparse_down;
     }
 
     // threadpool - TODO:  move to ggml-base

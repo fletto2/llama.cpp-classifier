@@ -157,6 +157,13 @@ LLAMA_API int32_t llama_set_moe_selection_bias(struct llama_context * ctx, const
 // not renormalised), as Strata's route tail skip. resident = NULL or rank_from < 0 turns it off. Returns 0 or -1.
 LLAMA_API int32_t llama_set_moe_tail_skip(struct llama_context * ctx, const float * resident, int32_t n_layer, int32_t n_expert, int32_t rank_from);
 
+// Per-token sparse FFN (CPU): from a side GGUF of fsp.w1/b1/w2/b2/down_t.<il> (research/fsp_train.py), a predictor
+// picks round(keep * n_ff) units per token in each listed layer >= first_layer, and only those rows of ffn_gate,
+// ffn_up and the transposed ffn_down are read. Used for ubatches of at most max_tokens tokens; dense otherwise and
+// where the FFN weights are offloaded or repacked (run with -ngl 0 --no-repack). path = NULL turns it off.
+// Returns the number of sparse layers, or -1.
+LLAMA_API int32_t llama_set_ffn_sparse(struct llama_context * ctx, const char * path, float keep, int32_t first_layer, int32_t max_tokens);
+
 // Residual cut after layer il (where control vectors are added): a = U^T (h - mu), h -= U (a * (|a| < thr)), i.e. the
 // component along k orthonormal directions is projected out (centred on mu) only for tokens whose coordinate lies
 // within thr; outlier tokens keep it (thr = FLT_MAX gives a plain centred projection). U holds the k directions one

@@ -14,7 +14,12 @@
 // llama_adapter_cvec
 //
 
+struct llama_ffn_sparse;
+
 struct llama_adapter_cvec {
+    // per-token sparse FFN (llama_set_ffn_sparse); owned by the context, read by the graph
+    const llama_ffn_sparse * fsp = nullptr;
+
     ggml_tensor * tensor_for(int il) const;
 
     // first: F32 [1, n_tokens], 1 for tokens at sequence position 0 (only used when needs_first(il))
